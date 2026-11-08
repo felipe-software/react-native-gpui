@@ -76,18 +76,27 @@ function listLinuxWindows() {
     if (!existsSync(dir)) return [];
     return readdirSync(dir)
         .filter((entry) => entry.endsWith(".json"))
-        .map((entry) => {
-            try {
-                return JSON.parse(readFileSync(join(dir, entry), "utf8"));
-            } catch {
-                return null;
-            }
-        })
-        .filter((window) => window && isLiveService(window.pid))
+        .map((entry) => readLiveWindowRecord(join(dir, entry)))
+        .filter(Boolean)
         .map((window) => ({
             ...window,
             bounds: { x: window.x, y: window.y, width: window.width, height: window.height },
         }));
+}
+
+function readLiveWindowRecord(path) {
+    let record;
+    try {
+        record = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+        return null;
+    }
+    if (isLiveService(record.pid)) return record;
+    if (!existsSync(`/proc/${record.pid}`)) {
+        rmSync(path, { force: true });
+        rmSync(path.replace(/\.json$/, ".capture"), { force: true });
+    }
+    return null;
 }
 
 function isLiveService(pid) {

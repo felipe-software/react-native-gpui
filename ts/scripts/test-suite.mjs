@@ -178,6 +178,9 @@ function runTask(task) {
 }
 
 function startFocusMonitor() {
+    if (process.platform !== "darwin") {
+        return { samples: [], stop() {} };
+    }
     const samplesByKey = new Map();
     let buffer = "";
     const script = `
