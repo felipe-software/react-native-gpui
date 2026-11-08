@@ -248,7 +248,7 @@ mod macos {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod macos {
     use super::NativeContextMenu;
 
@@ -259,4 +259,5 @@ mod macos {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub(crate) use macos::show;

@@ -1,6 +1,10 @@
 #include "jsc_shim.h"
 
+#if defined(__APPLE__)
 #include <JavaScriptCore/JavaScriptCore.h>
+#else
+#include <JavaScriptCore/JavaScript.h>
+#endif
 
 #include <cstdio>
 #include <chrono>

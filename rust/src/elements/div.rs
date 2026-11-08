@@ -314,6 +314,12 @@ pub fn scroll_by(id: u64, dx: f32, dy: f32) {
     mark_scroll_event(id);
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn scroll_offset(id: u64) -> (f32, f32) {
+    let offset = get_scroll(id);
+    (offset.x, offset.y)
+}
+
 pub fn scroll_to_end(id: u64) {
     NATIVE_SCROLL_OWNED.lock().unwrap().remove(&id);
     crate::elements::native_scroll::begin_programmatic_scroll(id);

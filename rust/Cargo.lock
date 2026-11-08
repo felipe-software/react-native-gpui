@@ -5558,6 +5558,7 @@ name = "react-native-gpui"
 version = "0.1.39"
 dependencies = [
  "anyhow",
+ "ashpd 0.11.1",
  "base64",
  "block",
  "cc",
@@ -5574,6 +5575,7 @@ dependencies = [
  "libghostty-vt",
  "objc",
  "once_cell",
+ "pkg-config",
  "raw-window-handle",
  "rustc-hash 2.1.2",
  "serde",
@@ -5582,6 +5584,7 @@ dependencies = [
  "tungstenite",
  "ureq",
  "url",
+ "wayland-client",
 ]
 
 [[package]]

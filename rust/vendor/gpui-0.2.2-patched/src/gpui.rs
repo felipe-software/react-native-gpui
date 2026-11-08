@@ -312,6 +312,21 @@ pub struct GpuSpecs {
     pub driver_info: String,
 }
 
+/// rngpui: one presented frame read back from a window's swapchain, as straight-alpha
+/// RGBA8 rows, top to bottom, in the encoding the display received.
+#[derive(Debug, Clone)]
+pub struct CapturedFrame {
+    /// Width in device pixels.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+/// rngpui: receives the next presented frame, or `None` when the platform cannot read it back.
+pub type FrameCaptureSink = Box<dyn FnOnce(Option<CapturedFrame>) + Send>;
+
 /// rngpui debug: gate for the [linetrace] glyph-paint diagnostics (silent-skip and
 /// error paths in text painting). Enabled by RNGPUI_SPRITE_TRACE so one env var
 /// drives the whole glyph-drop instrument.

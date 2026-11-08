@@ -3,12 +3,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+use gpui::Hsla;
 use gpui::{
-    App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, IntoElement,
+    App, Bounds, Element, ElementId, GlobalElementId, Hitbox, HitboxBehavior, IntoElement,
     LayoutId, MouseDownEvent, Pixels, Window,
 };
 
 use crate::elements::{ReactElement, report_layout};
+#[cfg(target_os = "macos")]
 use crate::style::ElementStyle;
 
 #[cfg(target_os = "macos")]
@@ -23,6 +26,49 @@ use objc::{class, msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 #[cfg(target_os = "macos")]
 use wry::WebViewExtMacOS;
+
+#[cfg(target_os = "macos")]
+pub type NativeWebView = wry::WebView;
+
+#[cfg(not(target_os = "macos"))]
+pub enum NativeWebView {}
+
+#[cfg(not(target_os = "macos"))]
+impl NativeWebView {
+    pub fn set_visible(&self, _visible: bool) -> Result<(), String> {
+        match *self {}
+    }
+
+    pub fn evaluate_script(&self, _script: &str) -> Result<(), String> {
+        match *self {}
+    }
+
+    pub fn load_html(&self, _html: &str) -> Result<(), String> {
+        match *self {}
+    }
+
+    pub fn load_url(&self, _url: &str) -> Result<(), String> {
+        match *self {}
+    }
+
+    pub fn focus_parent(&self) -> Result<(), String> {
+        match *self {}
+    }
+
+    pub fn reload(&self) -> Result<(), String> {
+        match *self {}
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn warn_unsupported_once() {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "[webview] <WebView> is not supported on this platform yet; it renders as an empty view"
+        )
+    });
+}
 
 #[cfg(target_os = "macos")]
 const CA_LAYER_MIN_X_MIN_Y_CORNER: u64 = 1 << 0;
@@ -50,7 +96,7 @@ unsafe extern "C" {
 // snapshot here each render, so this (stateless) element can resolve its view by id
 // and park it over the right layout bounds — the standard gpui + wry overlay pattern.
 thread_local! {
-    static WEBVIEWS: RefCell<HashMap<u64, Rc<wry::WebView>>> = RefCell::new(HashMap::new());
+    static WEBVIEWS: RefCell<HashMap<u64, Rc<NativeWebView>>> = RefCell::new(HashMap::new());
     static WEBVIEW_CONTENT: RefCell<HashMap<u64, WebViewContent>> = RefCell::new(HashMap::new());
     static WEBVIEW_LOADED_CONTENT: RefCell<HashMap<u64, WebViewContent>> = RefCell::new(HashMap::new());
     #[cfg(target_os = "macos")]
@@ -127,7 +173,7 @@ pub struct WebViewContent {
     pub is_html: bool,
 }
 
-pub fn set_webviews(map: HashMap<u64, Rc<wry::WebView>>, content: HashMap<u64, WebViewContent>) {
+pub fn set_webviews(map: HashMap<u64, Rc<NativeWebView>>, content: HashMap<u64, WebViewContent>) {
     let live_ids: std::collections::HashSet<u64> = map.keys().copied().collect();
     WEBVIEWS.with(|w| *w.borrow_mut() = map);
     WEBVIEW_CONTENT.with(|c| *c.borrow_mut() = content);
@@ -170,11 +216,11 @@ pub fn set_webviews(map: HashMap<u64, Rc<wry::WebView>>, content: HashMap<u64, W
     });
 }
 
-fn webview(id: u64) -> Option<Rc<wry::WebView>> {
+fn webview(id: u64) -> Option<Rc<NativeWebView>> {
     WEBVIEWS.with(|w| w.borrow().get(&id).cloned())
 }
 
-fn load_if_needed(id: u64, view: &wry::WebView) {
+fn load_if_needed(id: u64, view: &NativeWebView) {
     let content = WEBVIEW_CONTENT.with(|c| c.borrow().get(&id).cloned());
     let Some(content) = content else {
         return;
@@ -1175,17 +1221,8 @@ fn hue_to_srgb(p: f64, q: f64, mut t: f64) -> f64 {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_webview_bounds_direct(view: &wry::WebView, bounds: Bounds<Pixels>) {
-    let _ = view.set_bounds(wry::Rect {
-        position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(
-            bounds.origin.x.into(),
-            bounds.origin.y.into(),
-        )),
-        size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-            bounds.size.width.into(),
-            bounds.size.height.into(),
-        )),
-    });
+fn set_webview_bounds_direct(view: &NativeWebView, _bounds: Bounds<Pixels>) {
+    match *view {}
 }
 
 #[cfg(target_os = "macos")]

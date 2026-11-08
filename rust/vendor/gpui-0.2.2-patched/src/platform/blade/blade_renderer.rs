@@ -3,8 +3,9 @@
 
 use super::{BladeAtlas, BladeContext};
 use crate::{
-    Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point, PolychromeSprite,
-    PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, Underline,
+    BackdropBlur, Background, Bounds, CapturedFrame, DevicePixels, FrameCaptureSink, GpuSpecs,
+    MonochromeSprite, Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene,
+    Shadow, Size, TransformationMatrix, Underline,
 };
 use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
@@ -124,6 +125,7 @@ struct PathRasterizationVertex {
 
 struct BladePipelines {
     quads: gpu::RenderPipeline,
+    fades: gpu::RenderPipeline,
     shadows: gpu::RenderPipeline,
     path_rasterization: gpu::RenderPipeline,
     paths: gpu::RenderPipeline,
@@ -165,6 +167,11 @@ impl BladePipelines {
             blend: Some(blend_mode),
             write_mask: gpu::ColorWrites::default(),
         }];
+        let multiply_by_source_alpha = gpu::BlendComponent {
+            src_factor: gpu::BlendFactor::Zero,
+            dst_factor: gpu::BlendFactor::SrcAlpha,
+            operation: gpu::BlendOperation::Add,
+        };
 
         Self {
             quads: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
@@ -179,6 +186,27 @@ impl BladePipelines {
                 depth_stencil: None,
                 fragment: Some(shader.at("fs_quad")),
                 color_targets,
+                multisample_state: gpu::MultisampleState::default(),
+            }),
+            fades: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+                name: "fades",
+                data_layouts: &[&ShaderQuadsData::layout()],
+                vertex: shader.at("vs_quad"),
+                vertex_fetches: &[],
+                primitive: gpu::PrimitiveState {
+                    topology: gpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                fragment: Some(shader.at("fs_fade")),
+                color_targets: &[gpu::ColorTargetState {
+                    format: surface_info.format,
+                    blend: Some(gpu::BlendState {
+                        color: multiply_by_source_alpha,
+                        alpha: multiply_by_source_alpha,
+                    }),
+                    write_mask: gpu::ColorWrites::default(),
+                }],
                 multisample_state: gpu::MultisampleState::default(),
             }),
             shadows: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
@@ -305,6 +333,7 @@ impl BladePipelines {
 
     fn destroy(&mut self, gpu: &gpu::Context) {
         gpu.destroy_render_pipeline(&mut self.quads);
+        gpu.destroy_render_pipeline(&mut self.fades);
         gpu.destroy_render_pipeline(&mut self.shadows);
         gpu.destroy_render_pipeline(&mut self.path_rasterization);
         gpu.destroy_render_pipeline(&mut self.paths);
@@ -341,6 +370,14 @@ pub struct BladeRenderer {
     path_intermediate_msaa_texture: Option<gpu::Texture>,
     path_intermediate_msaa_texture_view: Option<gpu::TextureView>,
     rendering_parameters: RenderingParameters,
+    frame_capture_enabled: bool,
+    pending_captures: Vec<FrameCaptureSink>,
+}
+
+fn frame_capture_requested() -> bool {
+    ["RNGPUI_CAPTURE_PNG", "RNGPUI_FRAME_CAPTURE", "RNGPUI_TEST_MODE"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
 }
 
 impl BladeRenderer {
@@ -349,9 +386,14 @@ impl BladeRenderer {
         window: &I,
         config: BladeSurfaceConfig,
     ) -> anyhow::Result<Self> {
+        let frame_capture_enabled = frame_capture_requested();
         let surface_config = gpu::SurfaceConfig {
             size: config.size,
-            usage: gpu::TextureUsage::TARGET,
+            usage: if frame_capture_enabled {
+                gpu::TextureUsage::TARGET | gpu::TextureUsage::COPY
+            } else {
+                gpu::TextureUsage::TARGET
+            },
             display_sync: gpu::DisplaySync::Recent,
             color_space: gpu::ColorSpace::Srgb,
             allow_exclusive_full_screen: false,
@@ -427,7 +469,52 @@ impl BladeRenderer {
             path_intermediate_msaa_texture,
             path_intermediate_msaa_texture_view,
             rendering_parameters,
+            frame_capture_enabled,
+            pending_captures: Vec::new(),
         })
+    }
+
+    pub fn request_capture(&mut self, sink: FrameCaptureSink) {
+        if self.frame_capture_enabled {
+            self.pending_captures.push(sink);
+        } else {
+            sink(None);
+        }
+    }
+
+    fn read_back_frame(&self, buffer: gpu::Buffer, width: u32, height: u32) -> CapturedFrame {
+        let len = (width * height * 4) as usize;
+        let bytes = unsafe { std::slice::from_raw_parts(buffer.data(), len) };
+        let info = self.surface.info();
+        let swap_red_blue = matches!(
+            info.format,
+            gpu::TextureFormat::Bgra8Unorm | gpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let mut rgba = Vec::with_capacity(len);
+        for texel in bytes.chunks_exact(4) {
+            let (r, g, b) = if swap_red_blue {
+                (texel[2], texel[1], texel[0])
+            } else {
+                (texel[0], texel[1], texel[2])
+            };
+            let a = texel[3];
+            let pixel = match info.alpha {
+                gpu::AlphaMode::Ignored => [r, g, b, 255],
+                gpu::AlphaMode::PostMultiplied => [r, g, b, a],
+                gpu::AlphaMode::PreMultiplied if a == 0 => [0, 0, 0, 0],
+                gpu::AlphaMode::PreMultiplied => {
+                    let unmultiply =
+                        |c: u8| ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+                    [unmultiply(r), unmultiply(g), unmultiply(b), a]
+                }
+            };
+            rgba.extend_from_slice(&pixel);
+        }
+        CapturedFrame {
+            width,
+            height,
+            rgba,
+        }
     }
 
     fn wait_for_gpu(&mut self) {
@@ -902,16 +989,74 @@ impl BladeRenderer {
                         }
                     }
                 }
-                // in-app backdrop blur is a mac-only metal feature; no-op elsewhere.
-                PrimitiveBatch::BackdropBlurs(_) => {}
-                // the edge-fade alpha-multiply pipeline is a mac-only metal feature; no-op here.
-                PrimitiveBatch::Fades(_) => {}
+                PrimitiveBatch::BackdropBlurs(blurs) => {
+                    let tints: Vec<Quad> = blurs.iter().map(backdrop_tint_quad).collect();
+                    let instance_buf = unsafe { self.instance_belt.alloc_typed(&tints, &self.gpu) };
+                    let mut encoder = pass.with(&self.pipelines.quads);
+                    encoder.bind(
+                        0,
+                        &ShaderQuadsData {
+                            globals,
+                            b_quads: instance_buf,
+                        },
+                    );
+                    encoder.draw(0, 4, 0, tints.len() as u32);
+                }
+                PrimitiveBatch::Fades(fades) => {
+                    let instance_buf = unsafe { self.instance_belt.alloc_typed(fades, &self.gpu) };
+                    let mut encoder = pass.with(&self.pipelines.fades);
+                    encoder.bind(
+                        0,
+                        &ShaderQuadsData {
+                            globals,
+                            b_quads: instance_buf,
+                        },
+                    );
+                    encoder.draw(0, 4, 0, fades.len() as u32);
+                }
             }
         }
         drop(pass);
 
+        let capture_sinks = std::mem::take(&mut self.pending_captures);
+        let capture = if capture_sinks.is_empty() {
+            None
+        } else {
+            let extent = self.surface_config.size;
+            let buffer = self.gpu.create_buffer(gpu::BufferDesc {
+                name: "frame capture",
+                size: (extent.width * extent.height * 4) as u64,
+                memory: gpu::Memory::Shared,
+            });
+            let mut transfer = self.command_encoder.transfer("frame capture");
+            transfer.copy_texture_to_buffer(
+                gpu::TexturePiece {
+                    texture: frame.texture(),
+                    mip_level: 0,
+                    array_layer: 0,
+                    origin: [0, 0, 0],
+                },
+                buffer.into(),
+                extent.width * 4,
+                extent,
+            );
+            drop(transfer);
+            Some((buffer, extent, capture_sinks))
+        };
+
         self.command_encoder.present(frame);
         let sync_point = self.gpu.submit(&mut self.command_encoder);
+
+        if let Some((buffer, extent, sinks)) = capture {
+            let captured = self
+                .gpu
+                .wait_for(&sync_point, MAX_FRAME_TIME_MS)
+                .then(|| self.read_back_frame(buffer, extent.width, extent.height));
+            self.gpu.destroy_buffer(buffer);
+            for sink in sinks {
+                sink(captured.clone());
+            }
+        }
 
         profiling::scope!("finish");
         self.instance_belt.flush(&sync_point);
@@ -919,6 +1064,20 @@ impl BladeRenderer {
 
         self.wait_for_gpu();
         self.last_sync_point = Some(sync_point);
+    }
+}
+
+fn backdrop_tint_quad(blur: &BackdropBlur) -> Quad {
+    Quad {
+        order: blur.order,
+        border_style: Default::default(),
+        bounds: blur.bounds,
+        content_mask: blur.content_mask.clone(),
+        background: blur.tint.into(),
+        border_color: Default::default(),
+        corner_radii: blur.corner_radii,
+        border_widths: Default::default(),
+        transformation: TransformationMatrix::unit(),
     }
 }
 

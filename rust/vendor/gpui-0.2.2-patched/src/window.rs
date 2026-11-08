@@ -4929,6 +4929,13 @@ impl Window {
         }
     }
 
+    /// rngpui: read back the next frame this window presents. The sink runs on the
+    /// thread that draws, once, with `None` where the platform has no readback path.
+    pub fn capture_next_frame(&mut self, sink: crate::FrameCaptureSink) {
+        self.platform_window.capture_next_frame(sink);
+        self.refresh();
+    }
+
     /// Read information about the GPU backing this window.
     /// Currently returns None on Mac and Windows.
     pub fn gpu_specs(&self) -> Option<GpuSpecs> {

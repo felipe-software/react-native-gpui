@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync } from "no
 import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isServiceLibrary } from "./native-libs.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDir = resolve(root, "..", "rust", "target", "release");
@@ -9,6 +10,7 @@ const serviceSource = join(releaseDir, "rngpui-service");
 const nativeDir = join(root, "native");
 const serviceTarget = join(nativeDir, "rngpui-service");
 const jscEntitlements = resolve(root, "..", "rust", "jsc.entitlements");
+const isMac = process.platform === "darwin";
 
 mkdirSync(nativeDir, { recursive: true });
 stage(serviceSource, serviceTarget);
@@ -18,7 +20,7 @@ const linkedDylibs = linkedLibraries(serviceTarget);
 const needsGhostty = linkedDylibs.some((line) => line.includes("libghostty-vt"));
 const ghosttyDylibs = findNativeDylibs(join(releaseDir, "build"));
 if (needsGhostty && ghosttyDylibs.length === 0) {
-    throw new Error(`rngpui-service links libghostty-vt, but no libghostty-vt dylib was found under ${join(releaseDir, "build")}`);
+    throw new Error(`rngpui-service links libghostty-vt, but no libghostty-vt library was found under ${join(releaseDir, "build")}`);
 }
 
 // staged beside the packaged binary, and beside the cargo one too: build.rs embeds an
@@ -32,15 +34,17 @@ for (const dylib of ghosttyDylibs) {
     stage(dylib, join(releaseDir, name));
 }
 
-if (readdirSync(nativeDir).some((entry) => entry.endsWith(".dylib")) && !hasRpath(serviceTarget, "@executable_path")) {
-    execFileSync("install_name_tool", ["-add_rpath", "@executable_path", serviceTarget]);
-}
+if (isMac) {
+    if (readdirSync(nativeDir).some((entry) => entry.endsWith(".dylib")) && !hasRpath(serviceTarget, "@executable_path")) {
+        execFileSync("install_name_tool", ["-add_rpath", "@executable_path", serviceTarget]);
+    }
 
-// JavaScriptCore silently falls back to its interpreter when this entitlement is absent.
-// Sign both developer entry points after every byte-changing staging operation so direct
-// cargo runs and the npm package cannot enter that state.
-for (const binary of [serviceSource, serviceTarget]) {
-    execFileSync("codesign", ["--force", "--sign", "-", "--entitlements", jscEntitlements, binary]);
+    // JavaScriptCore silently falls back to its interpreter when this entitlement is absent.
+    // Sign both developer entry points after every byte-changing staging operation so direct
+    // cargo runs and the npm package cannot enter that state.
+    for (const binary of [serviceSource, serviceTarget]) {
+        execFileSync("codesign", ["--force", "--sign", "-", "--entitlements", jscEntitlements, binary]);
+    }
 }
 
 // the worklet/UI runtime bundle ships next to the binary — the service resolves
@@ -74,7 +78,7 @@ function findNativeDylibs(dir) {
             const path = join(current, entry.name);
             if (entry.isDirectory()) {
                 stack.push(path);
-            } else if (entry.name.endsWith(".dylib") && entry.name.startsWith("libghostty-vt")) {
+            } else if (isServiceLibrary(entry.name)) {
                 out.push(path);
             }
         }
@@ -88,7 +92,8 @@ function hasRpath(binary, rpath) {
 }
 
 function linkedLibraries(binary) {
-    return execFileSync("otool", ["-L", binary], { encoding: "utf8" })
+    const [command, args] = isMac ? ["otool", ["-L", binary]] : ["readelf", ["-d", binary]];
+    return execFileSync(command, args, { encoding: "utf8" })
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean);

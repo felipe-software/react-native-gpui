@@ -48,6 +48,7 @@ struct LoadedFont {
     font: Arc<CosmicTextFont>,
     features: CosmicFontFeatures,
     is_known_emoji_font: bool,
+    synthetic_oblique: bool,
 }
 
 impl CosmicTextSystem {
@@ -116,6 +117,13 @@ impl PlatformTextSystem for CosmicTextSystem {
             font_kit::matching::find_best_match(&candidate_properties, &font_into_properties(font))
                 .context("requested font family contains no font matching the other parameters")?;
 
+        let wants_slant = font.style != FontStyle::Normal;
+        let face_is_upright =
+            candidate_properties[ix].style == font_kit::properties::Style::Normal;
+        if wants_slant && face_is_upright {
+            let upright = candidates[ix];
+            return Ok(state.oblique_variant(upright));
+        }
         Ok(candidates[ix])
     }
 
@@ -190,6 +198,32 @@ impl CosmicTextSystemState {
         &self.loaded_fonts[font_id.0]
     }
 
+    fn oblique_variant(&mut self, upright: FontId) -> FontId {
+        let face = self.loaded_fonts[upright.0].font.id();
+        let features = self.loaded_fonts[upright.0].features.clone();
+        if let Some(ix) = self.loaded_fonts.iter().position(|loaded| {
+            loaded.synthetic_oblique && loaded.font.id() == face && loaded.features == features
+        }) {
+            return FontId(ix);
+        }
+        let variant = LoadedFont {
+            font: self.loaded_fonts[upright.0].font.clone(),
+            features,
+            is_known_emoji_font: self.loaded_fonts[upright.0].is_known_emoji_font,
+            synthetic_oblique: true,
+        };
+        self.loaded_fonts.push(variant);
+        FontId(self.loaded_fonts.len() - 1)
+    }
+
+    fn cache_key_flags(&self, font_id: FontId) -> cosmic_text::CacheKeyFlags {
+        if self.loaded_fonts[font_id.0].synthetic_oblique {
+            cosmic_text::CacheKeyFlags::FAKE_ITALIC
+        } else {
+            cosmic_text::CacheKeyFlags::empty()
+        }
+    }
+
     #[profiling::function]
     fn add_fonts(&mut self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         let db = self.font_system.db_mut();
@@ -249,6 +283,7 @@ impl CosmicTextSystemState {
                 font,
                 features: features.try_into()?,
                 is_known_emoji_font: check_is_known_emoji_font(&postscript_name),
+                synthetic_oblique: false,
             });
         }
 
@@ -273,6 +308,7 @@ impl CosmicTextSystemState {
     }
 
     fn raster_bounds(&mut self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+        let flags = self.cache_key_flags(params.font_id);
         let font = &self.loaded_fonts[params.font_id.0].font;
         let subpixel_shift = point(
             params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
@@ -287,7 +323,7 @@ impl CosmicTextSystemState {
                     params.glyph_id.0 as u16,
                     (params.font_size * params.scale_factor).into(),
                     (subpixel_shift.x, subpixel_shift.y.trunc()),
-                    cosmic_text::CacheKeyFlags::empty(),
+                    flags,
                 )
                 .0,
             )
@@ -309,6 +345,7 @@ impl CosmicTextSystemState {
             anyhow::bail!("glyph bounds are empty");
         } else {
             let bitmap_size = glyph_bounds.size;
+            let flags = self.cache_key_flags(params.font_id);
             let font = &self.loaded_fonts[params.font_id.0].font;
             let subpixel_shift = point(
                 params.subpixel_variant.x as f32 / SUBPIXEL_VARIANTS_X as f32 / params.scale_factor,
@@ -323,7 +360,7 @@ impl CosmicTextSystemState {
                         params.glyph_id.0 as u16,
                         (params.font_size * params.scale_factor).into(),
                         (subpixel_shift.x, subpixel_shift.y.trunc()),
-                        cosmic_text::CacheKeyFlags::empty(),
+                        flags,
                     )
                     .0,
                 )
@@ -365,6 +402,7 @@ impl CosmicTextSystemState {
                 font,
                 features: CosmicFontFeatures::new(),
                 is_known_emoji_font: check_is_known_emoji_font(&face.post_script_name),
+                synthetic_oblique: false,
             });
 
             font_id

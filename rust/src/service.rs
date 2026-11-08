@@ -1,5 +1,7 @@
 #![allow(unexpected_cfgs)]
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,10 +69,19 @@ mod http;
 mod icons;
 mod inspector;
 mod jsc;
+#[cfg(target_os = "linux")]
+mod linux_context_menu;
+#[cfg(target_os = "linux")]
+mod linux_display;
+#[cfg(target_os = "linux")]
+mod linux_frame;
+#[cfg(target_os = "linux")]
+mod linux_window_registry;
 #[cfg(target_os = "macos")]
 mod liquid_glass;
 mod native_menu;
 mod perf_hud;
+mod png_encode;
 mod selection;
 mod style;
 
@@ -82,6 +93,7 @@ use elements::{
 use elements::{
     NativeResizeEdge, NativeResizeSpec, SystemShadowSpec, TerminalFrame, TerminalFrameKind,
 };
+#[cfg(target_os = "macos")]
 use raw_window_handle::HasWindowHandle;
 use style::{Dim, ElementStyle};
 
@@ -922,7 +934,9 @@ struct ServiceApp {
     input_event_counts: HashMap<u64, u64>,
     suppressed_input_changes: HashMap<u64, VecDeque<String>>,
     // persistent native WebView, one per <WebView> id.
-    webviews: HashMap<u64, Rc<wry::WebView>>,
+    webviews: HashMap<u64, Rc<elements::webview::NativeWebView>>,
+    #[cfg(target_os = "linux")]
+    context_menu: Option<linux_context_menu::OpenContextMenu>,
     inspector: inspector::InspectorState,
     // id of the currently-focused text input, used by the debug CLI type/key driver.
     focused_input: Option<u64>,
@@ -1042,6 +1056,10 @@ impl Element for FrameMarker {
         self.child.paint(window, cx);
         bridge::flush_layout_frame();
         let frame = anim_trace::on_frame_painted();
+        #[cfg(target_os = "linux")]
+        if FIRST_TREE_APPLIED.load(Ordering::SeqCst) {
+            linux_window_registry::publish_first_content(window);
+        }
         if std::env::var_os("RNGPUI_STARTUP_TIMING").is_some() {
             if !FIRST_PAINT_LOGGED.swap(true, Ordering::SeqCst) {
                 startup_mark("first paint complete");
@@ -1612,6 +1630,14 @@ impl Render for ServiceApp {
         // The tree is applied (and a re-render scheduled) by the jsc JS thread's
         // foreground task in `main`, not polled here — rendering is fully on-demand: this
         // runs only on a new tree, input, scroll, or resize, so the app idles at ~0fps.
+        #[cfg(target_os = "linux")]
+        let theme_mode = forced_appearance().unwrap_or_else(|| match window.appearance() {
+            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => ThemeMode::Dark,
+            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => {
+                ThemeMode::Light
+            }
+        });
+        #[cfg(not(target_os = "linux"))]
         let theme_mode = root_theme_mode(&self.root);
         if Theme::global(cx).mode != theme_mode {
             Theme::change(theme_mode, Some(window), cx);
@@ -1638,6 +1664,9 @@ impl Render for ServiceApp {
 
         // Emit a `resize` event whenever the content size changes, so the JS side
         // can update Dimensions and re-render. Bridges RN's Dimensions API.
+        #[cfg(target_os = "linux")]
+        let vs = linux_frame::content_size(window);
+        #[cfg(not(target_os = "linux"))]
         let vs = window.viewport_size();
         let w: f64 = vs.width.into();
         let h: f64 = vs.height.into();
@@ -1867,6 +1896,8 @@ impl Render for ServiceApp {
                     // Prepaint still reshapes text/caret/selection/IME geometry on a retained
                     // frame; only the unchanged outer Taffy boxes are replayed.
                     cx.observe(&state, move |_this, input, cx| {
+                        #[cfg(not(target_os = "macos"))]
+                        let _ = input;
                         #[cfg(target_os = "macos")]
                         {
                             let input = input.read(cx);
@@ -1959,6 +1990,12 @@ impl Render for ServiceApp {
                         is_html,
                     },
                 );
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = hidden;
+                    elements::webview::warn_unsupported_once();
+                }
+                #[cfg(target_os = "macos")]
                 let view = self.webviews.entry(id).or_insert_with(|| {
                     let event_dbg = std::env::var("RNGPUI_WEBVIEW_EVENT_DEBUG").is_ok();
                     let message_dbg = std::env::var("RNGPUI_WEBVIEW_MESSAGE_DEBUG").is_ok();
@@ -2007,17 +2044,12 @@ impl Render for ServiceApp {
                         let window_handle = window.window_handle().expect("No window handle");
                         builder.build_as_child(&window_handle)
                     };
-                    #[cfg(not(target_os = "macos"))]
-                    let wv = {
-                        let window_handle = window.window_handle().expect("No window handle");
-                        builder.build_as_child(&window_handle)
-                    };
                     let wv = wv.expect("failed to create webview");
                     let _ = wv.set_visible(!hidden);
                     Rc::new(wv)
                 });
+                #[cfg(target_os = "macos")]
                 if hidden {
-                    #[cfg(target_os = "macos")]
                     elements::webview::hide_webview_host(id);
                     let _ = view.set_visible(false);
                 } else {
@@ -2173,6 +2205,9 @@ impl Render for ServiceApp {
                 }))
                 .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     let root = this.root.clone();
+                    #[cfg(target_os = "linux")]
+                    let size = linux_frame::content_size(window);
+                    #[cfg(not(target_os = "linux"))]
                     let size = window.viewport_size();
                     let viewport = (size.width.into(), size.height.into());
                     let (handled, copy_close_token) =
@@ -2196,6 +2231,11 @@ impl Render for ServiceApp {
             if let Some(overlay) = self.inspector.overlay() {
                 frame = frame.child(overlay);
             }
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(menu) = &self.context_menu {
+            frame = frame.child(menu.element());
         }
 
         if let Some(hud) = perf_hud::element(self.tree_metadata.node_ids.len()) {
@@ -2751,10 +2791,7 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
             }
             "quickLook" => {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
-                let filename = v
-                    .get("filename")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("");
+                let filename = v.get("filename").and_then(|x| x.as_str()).unwrap_or("");
                 Some(Incoming::QuickLook {
                     url: url.to_string(),
                     filename: filename.to_string(),
@@ -2951,54 +2988,58 @@ fn allowed_external_url(url: &str) -> bool {
 /// detached on a thread: the download can take seconds and `qlmanage -p`
 /// blocks while its window is open, and neither may stall the service. temp
 /// files are left for the os temp cleaner.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn fetch_preview_file(url: &str, filename: &str) -> Option<std::path::PathBuf> {
+    let name = filename
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("preview");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("tm-quicklook-{}-{nanos}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        eprintln!("[rngpui] quickLook: cannot create temp dir");
+        return None;
+    }
+    // shared videos can be large; cap the fetch so a giant file can't OOM
+    // the service (a truncated file won't preview, but the attempt is
+    // best-effort either way).
+    const MAX_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
+    let response = match ureq::get(url).timeout(Duration::from_secs(30)).call() {
+        Ok(response) => response,
+        Err(err) => {
+            eprintln!("[rngpui] quickLook: fetch failed: {err}");
+            return None;
+        }
+    };
+    let mut bytes = Vec::new();
+    if response
+        .into_reader()
+        .take(MAX_PREVIEW_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.is_empty()
+    {
+        eprintln!("[rngpui] quickLook: read failed");
+        return None;
+    }
+    let path = dir.join(name);
+    if std::fs::write(&path, &bytes).is_err() {
+        eprintln!("[rngpui] quickLook: cannot write temp file");
+        return None;
+    }
+    Some(path)
+}
+
 #[cfg(target_os = "macos")]
 fn quick_look_preview(url: String, filename: String) {
     std::thread::spawn(move || {
-        let name = filename
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("preview");
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("tm-quicklook-{}-{nanos}", std::process::id()));
-        if std::fs::create_dir_all(&dir).is_err() {
-            eprintln!("[rngpui] quickLook: cannot create temp dir");
+        let Some(path) = fetch_preview_file(&url, &filename) else {
             return;
-        }
-        // shared videos can be large; cap the fetch so a giant file can't OOM
-        // the service (a truncated file won't preview, but the attempt is
-        // best-effort either way).
-        const MAX_PREVIEW_BYTES: u64 = 256 * 1024 * 1024;
-        let response = match ureq::get(&url)
-            .timeout(Duration::from_secs(30))
-            .call()
-        {
-            Ok(response) => response,
-            Err(err) => {
-                eprintln!("[rngpui] quickLook: fetch failed: {err}");
-                return;
-            }
         };
-        let mut bytes = Vec::new();
-        if response
-            .into_reader()
-            .take(MAX_PREVIEW_BYTES)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.is_empty()
-        {
-            eprintln!("[rngpui] quickLook: read failed");
-            return;
-        }
-        let path = dir.join(name);
-        if std::fs::write(&path, &bytes).is_err() {
-            eprintln!("[rngpui] quickLook: cannot write temp file");
-            return;
-        }
-        drop(bytes);
         if std::process::Command::new("qlmanage")
             .arg("-p")
             .arg(&path)
@@ -3013,9 +3054,28 @@ fn quick_look_preview(url: String, filename: String) {
     });
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn quick_look_preview(url: String, filename: String) {
+    std::thread::spawn(move || {
+        let Some(path) = fetch_preview_file(&url, &filename) else {
+            return;
+        };
+        if std::process::Command::new("xdg-open")
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_err()
+        {
+            eprintln!("[rngpui] quickLook: xdg-open failed");
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn quick_look_preview(_url: String, _filename: String) {
-    eprintln!("[rngpui] quickLook is macOS-only");
+    eprintln!("[rngpui] quickLook is not supported on this platform");
 }
 
 fn app_command_key_bindings(
@@ -3084,6 +3144,32 @@ fn build_app_menu_item(item: AppCommandMenuItem) -> MenuItem {
 }
 
 /// Read the app bundle named by RNGPUI_BUNDLE — JS source.
+#[cfg(not(target_os = "macos"))]
+fn write_png_atomically(path: &str, frame: &gpui::CapturedFrame) {
+    let staging = format!("{path}.staging");
+    let png = png_encode::encode_rgba_png(&frame.rgba, frame.width, frame.height);
+    let written = std::fs::write(&staging, png).and_then(|()| std::fs::rename(&staging, path));
+    if let Err(error) = written {
+        eprintln!("[rngpui capture] failed to write {path}: {error}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_window_title() -> String {
+    ["RNGPUI_WINDOW_TITLE", "RNGPUI_APP_NAME"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "react-native-gpui".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_app_id() -> String {
+    std::env::var("RNGPUI_APP_ID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "react-native-gpui".to_string())
+}
+
 fn load_bundle() -> Vec<u8> {
     let path = match std::env::var("RNGPUI_BUNDLE") {
         Ok(p) => p,
@@ -3170,7 +3256,23 @@ fn pick_paths_native(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+fn post_picked_paths(id: u64, result: Result<Vec<String>, String>) {
+    let payload = match result {
+        Ok(paths) => serde_json::json!({
+            "id": id,
+            "ok": true,
+            "paths": paths,
+        }),
+        Err(error) => serde_json::json!({
+            "id": id,
+            "ok": false,
+            "error": error,
+        }),
+    };
+    jsc::post("__rngpui_filePickerDone", payload.to_string());
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn pick_paths_native(
     _files: bool,
     _directories: bool,
@@ -3219,6 +3321,8 @@ fn spawn_parent_exit_watchdog() {
             std::thread::sleep(std::time::Duration::from_secs(2));
             if std::os::unix::process::parent_id() != parent {
                 eprintln!("[rngpui] launcher (pid {parent}) exited — reaping orphaned service");
+                #[cfg(target_os = "linux")]
+                linux_window_registry::remove();
                 std::process::exit(0);
             }
         }
@@ -3253,6 +3357,8 @@ fn redirect_stdio_to_log() {
 }
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    linux_display::select_backend();
     // launched as CFBundleExecutable, LaunchServices gives cwd `/`; RNGPUI_CWD restores the
     // working dir the wrapper used to `cd` into (the gui root, for the Cmd+R reload build).
     if let Ok(dir) = std::env::var("RNGPUI_CWD") {
@@ -3457,6 +3563,8 @@ fn main() {
             KeyBinding::new("alt-cmd-h", HideOthers, None),
             KeyBinding::new("cmd-m", Minimize, None),
         ]);
+        #[cfg(target_os = "linux")]
+        cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
         cx.set_menus(mac_chrome_menus());
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -3533,16 +3641,29 @@ fn main() {
             focused_input: None,
             last_debug_dump: None,
             debug_dump_scheduled: false,
+            #[cfg(target_os = "linux")]
+            context_menu: None,
         });
 
+        let borderless = test_mode || std::env::var("RNGPUI_BORDERLESS").is_ok();
+        #[cfg(target_os = "linux")]
+        let window_size = {
+            linux_frame::configure(!borderless);
+            let chrome = linux_frame::chrome_size(linux_display::expects_client_decorations(
+                linux_frame::requested_decorations(),
+            ));
+            size(px(win_w) + chrome.width, px(win_h) + chrome.height)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let window_size = size(px(win_w), px(win_h));
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: window_origin,
-                size: size(px(win_w), px(win_h)),
+                size: window_size,
             })),
             // borderless/HUD mode (RNGPUI_BORDERLESS) drops the titlebar + traffic
             // lights entirely, for a floating spotlight-style window.
-            titlebar: if test_mode || std::env::var("RNGPUI_BORDERLESS").is_ok() {
+            titlebar: if borderless {
                 None
             } else {
                 Some(TitlebarOptions {
@@ -3572,11 +3693,21 @@ fn main() {
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    gpui::WindowBackgroundAppearance::Blurred
+                    if std::env::var("RNGPUI_OPAQUE_WINDOW").is_ok() {
+                        gpui::WindowBackgroundAppearance::Opaque
+                    } else {
+                        gpui::WindowBackgroundAppearance::Blurred
+                    }
                 }
             },
+            #[cfg(target_os = "linux")]
+            app_id: Some(linux_app_id()),
+            #[cfg(not(target_os = "linux"))]
             app_id: None,
             window_min_size: None,
+            #[cfg(target_os = "linux")]
+            window_decorations: linux_frame::requested_decorations(),
+            #[cfg(not(target_os = "linux"))]
             window_decorations: None,
             tabbing_identifier: None,
         };
@@ -3585,6 +3716,9 @@ fn main() {
         startup_mark("pre open_window");
         let window_handle = cx
             .open_window(options, move |window, cx| {
+                #[cfg(target_os = "linux")]
+                window.set_window_title(&linux_window_title());
+                #[cfg(not(target_os = "linux"))]
                 window.set_window_title("react-native-gpui");
                 startup_mark("open_window cb: pre glass");
                 #[cfg(target_os = "macos")]
@@ -3609,6 +3743,18 @@ fn main() {
                 #[cfg(target_os = "macos")]
                 if background && show_window {
                     liquid_glass::show_nonactivating_window(window);
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    linux_window_registry::set_title(linux_window_title());
+                    content.update(cx, |_this, cx| {
+                        cx.observe_window_bounds(window, |_, window, _| {
+                            linux_window_registry::republish(window);
+                        })
+                        .detach();
+                    });
+                    cx.on_app_quit(|_| async { linux_window_registry::remove() })
+                        .detach();
                 }
                 let content_for_activation = content.clone();
                 content_for_activation.update(cx, |_this, cx| {
@@ -3647,10 +3793,48 @@ fn main() {
                         bridge::appearance(effective_appearance_scheme(window.appearance()));
                     })
                     .detach();
-                cx.new(|cx| gpui_component::Root::new(content.clone(), window, cx))
+                #[cfg(target_os = "linux")]
+                let root_view: gpui::AnyView = {
+                    let appearance_override = forced_appearance().map(|mode| match mode {
+                        ThemeMode::Dark => gpui::WindowAppearance::Dark,
+                        ThemeMode::Light => gpui::WindowAppearance::Light,
+                    });
+                    let content_view: gpui::AnyView = content.clone().into();
+                    cx.new(|_| {
+                        linux_frame::LinuxWindowFrame::new(
+                            content_view,
+                            linux_window_title().into(),
+                            appearance_override,
+                        )
+                    })
+                    .into()
+                };
+                #[cfg(not(target_os = "linux"))]
+                let root_view = content.clone();
+                cx.new(|cx| gpui_component::Root::new(root_view, window, cx))
             })
             .expect("open window");
         startup_mark("window opened (GPUI/Metal init)");
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("RNGPUI_STARTUP_TIMING").is_some() {
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let _ = window_handle.update(cx, |_root, window, _cx| {
+                    eprintln!(
+                        "[linux] display={} decorations={:?} appearance={:?} scale={} viewport={:?} gpu={:?}",
+                        linux_display::backend_name(),
+                        window.window_decorations(),
+                        window.appearance(),
+                        window.scale_factor(),
+                        window.viewport_size(),
+                        window.gpu_specs().map(|gpu| format!("{} ({})", gpu.device_name, gpu.driver_name)),
+                    );
+                });
+            })
+            .detach();
+        }
         // macOS transparent-window shadow: AppKit traces the shadow from content
         // alpha, and at startup it computes it before the first Metal paint — so
         // the glass window has NO shadow until a resize forces a recompute (real
@@ -3761,6 +3945,81 @@ fn main() {
                                     &capture_path,
                                 );
                             }
+                        })
+                        .is_ok();
+                    if !still_open {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if let Ok(capture_path) = std::env::var("RNGPUI_CAPTURE_PNG") {
+            let capture_trigger = std::env::var("RNGPUI_CAPTURE_TRIGGER").ok();
+            let in_flight = Arc::new(AtomicBool::new(false));
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(if capture_trigger.is_some() {
+                            25
+                        } else {
+                            30
+                        }))
+                        .await;
+                    if in_flight.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    if let Some(trigger) = capture_trigger.as_deref()
+                        && std::fs::remove_file(trigger).is_err()
+                    {
+                        continue;
+                    }
+                    in_flight.store(true, Ordering::Release);
+                    let path = capture_path.clone();
+                    let done = in_flight.clone();
+                    let still_open = window_handle
+                        .update(cx, |_root, window, _cx| {
+                            window.capture_next_frame(Box::new(move |frame| {
+                                match frame {
+                                    Some(frame) => write_png_atomically(&path, &frame),
+                                    None => eprintln!("[rngpui capture] this window cannot read back frames"),
+                                }
+                                done.store(false, Ordering::Release);
+                            }));
+                        })
+                        .is_ok();
+                    if !still_open {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+
+        #[cfg(target_os = "linux")]
+        if linux_window_registry::capture_enabled() {
+            let request_path = linux_window_registry::capture_request_path();
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(40))
+                        .await;
+                    let Ok(target) = std::fs::read_to_string(&request_path) else {
+                        continue;
+                    };
+                    let _ = std::fs::remove_file(&request_path);
+                    let target = target.trim().to_string();
+                    if target.is_empty() {
+                        continue;
+                    }
+                    let still_open = window_handle
+                        .update(cx, |_root, window, _cx| {
+                            window.capture_next_frame(Box::new(move |frame| match frame {
+                                Some(frame) => write_png_atomically(&target, &frame),
+                                None => eprintln!("[rngpui capture] this window cannot read back frames"),
+                            }));
                         })
                         .is_ok();
                     if !still_open {
@@ -4303,20 +4562,34 @@ fn main() {
                         multiple,
                         prompt,
                     } => {
-                        let result = pick_paths_native(files, directories, multiple, &prompt);
-                        let payload = match result {
-                            Ok(paths) => serde_json::json!({
-                                "id": id,
-                                "ok": true,
-                                "paths": paths,
-                            }),
-                            Err(error) => serde_json::json!({
-                                "id": id,
-                                "ok": false,
-                                "error": error,
-                            }),
-                        };
-                        jsc::post("__rngpui_filePickerDone", payload.to_string());
+                        #[cfg(target_os = "linux")]
+                        {
+                            let options = gpui::PathPromptOptions {
+                                files,
+                                directories,
+                                multiple,
+                                prompt: (!prompt.is_empty()).then(|| prompt.into()),
+                            };
+                            let Ok(receiver) = cx.update(|cx| cx.prompt_for_paths(options)) else {
+                                break;
+                            };
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let result = match receiver.await {
+                                        Ok(Ok(paths)) => Ok(paths
+                                            .unwrap_or_default()
+                                            .into_iter()
+                                            .map(|path| path.to_string_lossy().into_owned())
+                                            .collect()),
+                                        Ok(Err(error)) => Err(error.to_string()),
+                                        Err(_) => Err("the file picker closed unexpectedly".to_string()),
+                                    };
+                                    post_picked_paths(id, result);
+                                })
+                                .detach();
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        post_picked_paths(id, pick_paths_native(files, directories, multiple, &prompt));
                     }
                     Incoming::DebugTypeText { text, reply } => {
                         let mut focused_id = None;
@@ -4600,11 +4873,18 @@ fn main() {
                         // dispatch_action defers through the effect queue; the update()
                         // above flushed effects on drop, so the handler (and any
                         // clipboard write) has run by now.
+                        #[cfg(target_os = "macos")]
+                        let pasteboard = read_general_pasteboard_string();
+                        #[cfg(not(target_os = "macos"))]
+                        let pasteboard = cx
+                            .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+                            .ok()
+                            .flatten();
                         let _ = reply.send(serde_json::json!({
                             "ok": matches!(dispatched, Ok(true)),
                             "type": "dispatchAction",
                             "name": name,
-                            "pasteboard": read_general_pasteboard_string(),
+                            "pasteboard": pasteboard,
                         }));
                         if dispatched.is_err() {
                             break;
@@ -4710,6 +4990,19 @@ fn main() {
                                 "hasVerticalScroller": stats.has_vertical_scroller,
                             }));
                         } else {
+                            #[cfg(not(target_os = "macos"))]
+                            if let Some(id) = target {
+                                let (offset_x, offset_y) = elements::scroll_offset(id);
+                                let _ = reply.send(serde_json::json!({
+                                    "ok": true,
+                                    "type": "scrollDriverStats",
+                                    "driver": "gpui",
+                                    "targetId": id,
+                                    "offsetX": offset_x,
+                                    "offsetY": offset_y,
+                                }));
+                                continue;
+                            }
                             let _ = reply.send(serde_json::json!({
                                 "ok": false,
                                 "type": "scrollDriverStats",
@@ -4812,7 +5105,10 @@ fn main() {
                             })
                             .unwrap_or_else(|_| ("<update-failed>".into(), false));
                         #[cfg(not(target_os = "macos"))]
-                        let (hit_class, dispatched) = ("<non-macos>".to_string(), false);
+                        let (hit_class, dispatched) = {
+                            let _ = dy;
+                            ("<non-macos>".to_string(), false)
+                        };
                         // ask the page for its current scrollY so the caller can confirm a
                         // NON-zero scroll resulted from the native event alone. read-only —
                         // it posts the value back through the same onMessage bridge the
@@ -4935,6 +5231,7 @@ fn main() {
                             "ok": false,
                             "type": "webviewCopyProof",
                             "error": "non-macos",
+                            "webviewId": webview_id,
                         }));
                     }
                     Incoming::AppCommands(config) => {
@@ -4943,10 +5240,22 @@ fn main() {
                         }
                     }
                     Incoming::NativeContextMenu(menu) => {
-                        if window_handle
-                            .update(cx, |_root, window, _cx| native_menu::show(window, menu))
-                            .is_err()
-                        {
+                        #[cfg(target_os = "linux")]
+                        let shown = window_handle.update(cx, |_root, window, cx| {
+                            pump.update(cx, |this, cx| {
+                                this.context_menu = linux_context_menu::open(
+                                    menu,
+                                    |this: &mut ServiceApp, _cx| this.context_menu = None,
+                                    window,
+                                    cx,
+                                );
+                                cx.notify();
+                            })
+                        });
+                        #[cfg(not(target_os = "linux"))]
+                        let shown = window_handle
+                            .update(cx, |_root, window, _cx| native_menu::show(window, menu));
+                        if shown.is_err() {
                             break;
                         }
                     }
@@ -4976,7 +5285,18 @@ fn main() {
                             break;
                         }
                         #[cfg(not(target_os = "macos"))]
-                        let _ = color;
+                        {
+                            #[cfg(target_os = "linux")]
+                            linux_frame::set_app_tint(color);
+                            #[cfg(not(target_os = "linux"))]
+                            let _ = color;
+                            if window_handle
+                                .update(cx, |_root, window, _cx| window.refresh())
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                     Incoming::RequestAttention { critical } => {
                         dock::request_attention(critical);
@@ -4985,7 +5305,7 @@ fn main() {
                         // spawn a new process of the same binary to create a new window.
                         // on macOS this launches a second instance with its own JavaScriptCore +
                         // GPUI window; the two windows run independently.
-                        #[cfg(target_os = "macos")]
+                        #[cfg(any(target_os = "macos", target_os = "linux"))]
                         {
                             if let Ok(exe) = std::env::current_exe() {
                                 let _ = std::process::Command::new(exe)
