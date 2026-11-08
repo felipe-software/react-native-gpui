@@ -5568,6 +5568,7 @@ dependencies = [
  "cpal",
  "flume",
  "futures",
+ "getrandom 0.2.17",
  "gpui",
  "gpui-component",
  "lb-wry",
@@ -5585,6 +5586,7 @@ dependencies = [
  "ureq",
  "url",
  "wayland-client",
+ "zbus",
 ]
 
 [[package]]

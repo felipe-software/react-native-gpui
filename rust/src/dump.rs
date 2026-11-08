@@ -142,7 +142,13 @@ fn dump_node(el: &Arc<ReactElement>) -> Value {
         obj.insert("style".into(), Value::Object(style));
     }
 
-    let children: Vec<Value> = el.children.iter().map(dump_node).collect();
+    let mut children: Vec<Value> = el.children.iter().map(dump_node).collect();
+    if el.element_type == crate::elements::chat_list::ELEMENT_TYPE
+        && let Some((summary, rows)) = crate::elements::chat_list::dump(el.global_id)
+    {
+        obj.insert("chatList".into(), summary);
+        children.extend(rows);
+    }
     if !children.is_empty() {
         obj.insert("children".into(), json!(children));
     }

@@ -84,6 +84,22 @@ export type {
     KeyboardAvoidingViewProps,
     ActivityIndicatorProps,
 } from "./components";
+export { ChatList } from "./ChatList";
+export type {
+    ChatListBadgeElement,
+    ChatListElement,
+    ChatListEmoteElement,
+    ChatListHandle,
+    ChatListHoverEvent,
+    ChatListMessage,
+    ChatListMessagePatch,
+    ChatListPressEvent,
+    ChatListProps,
+    ChatListScrollState,
+    ChatListTargetKind,
+    ChatListTextElement,
+    ChatListUserElement,
+} from "./chat-list-types";
 
 // stylesheet + style types
 export { StyleSheet, normalizeStyle } from "./StyleSheet";
@@ -159,6 +175,17 @@ export {
     type FilePickerOptions,
     type VoiceRecording,
 } from "./apis";
+export {
+    Notifications,
+    Sound,
+    Processes,
+    LocalStorage,
+    getRandomValues,
+    randomUUID,
+    type NotificationOptions,
+    type SoundOptions,
+    type SoundSource,
+} from "./platform-services";
 export { Animated, AnimatedValue, Easing } from "./Animated";
 export {
     AppCommands,

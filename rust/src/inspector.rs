@@ -200,6 +200,7 @@ pub struct TapTarget {
     pub bounds: (f32, f32, f32, f32),
     pub native_list_group: Option<String>,
     pub focusable_input: bool,
+    pub chat_list: bool,
 }
 
 // ─── option+click menu ──────────────────────────────────────────────────────────
@@ -1549,6 +1550,22 @@ pub fn diff_at(root: &Arc<ReactElement>, x: f32, y: f32) -> Option<u64> {
     None
 }
 
+pub fn chat_list_at(root: &Arc<ReactElement>, x: f32, y: f32) -> Option<u64> {
+    let position = point(px(x), px(y));
+    let mut path = Vec::new();
+    let mut hits = Vec::new();
+    collect_hits(root, position, &mut path, &mut hits);
+    for hit in hits {
+        if is_chat_list(&hit.target.element_type) {
+            return Some(hit.target.id);
+        }
+        if paints_over(&hit) {
+            return None;
+        }
+    }
+    None
+}
+
 /// Whether a node puts pixels on screen where it was hit, rather than being a
 /// purely structural box. Reads the facts the inspector already collects, so a
 /// container with no fill, no edge, and nothing to draw does not count as cover.
@@ -1584,11 +1601,15 @@ pub fn tap_target_at(root: &Arc<ReactElement>, x: f32, y: f32) -> Option<TapTarg
     // so the caller can still report what is there.
     let hit = hits
         .iter()
-        .find(|hit| crate::elements::listens_pointer_down(&hit.events))
+        .find(|hit| {
+            crate::elements::listens_pointer_down(&hit.events)
+                || is_chat_list(&hit.target.element_type)
+        })
         .or_else(|| hits.first())?;
     Some(TapTarget {
         id: hit.target.id,
         focusable_input: is_input_type(&hit.target.element_type),
+        chat_list: is_chat_list(&hit.target.element_type),
         events: hit.events.clone(),
         native_list_group: hit.native_list_group.clone(),
         bounds: (
@@ -1602,6 +1623,10 @@ pub fn tap_target_at(root: &Arc<ReactElement>, x: f32, y: f32) -> Option<TapTarg
 
 fn is_input_type(element_type: &str) -> bool {
     matches!(element_type, "textinput" | "textarea")
+}
+
+fn is_chat_list(element_type: &str) -> bool {
+    element_type == crate::elements::chat_list::ELEMENT_TYPE
 }
 
 /// Appends every node whose painted bounds contain `position`, in reverse paint order:

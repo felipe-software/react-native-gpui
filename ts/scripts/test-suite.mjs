@@ -57,6 +57,7 @@ const tasks = [
     { name: "inspector", platforms: ["darwin"], command: "node", args: ["scripts/inspector-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "hit-test", command: "node", args: ["scripts/hit-test-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
     { name: "occlusion", command: "node", args: ["scripts/overlay-occlusion-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
+    { name: "chat-list", command: "node", args: ["scripts/chat-list-conformance.mjs"], cwd: root, timeoutMs: 60_000 },
     { name: "reload", command: "node", args: ["scripts/reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },
     { name: "hot-reload", command: "node", args: ["scripts/hot-reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },
     { name: "hot-reload-cli", command: "node", args: ["scripts/hot-reload-cli-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
@@ -69,6 +70,9 @@ const tasks = [
     { name: "webview-render", platforms: ["darwin"], command: "bun", args: ["run", "scripts/webview-render-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "window-mode", command: "bun", args: ["run", "scripts/window-mode-conformance.mjs"], cwd: root },
     { name: "pseudo-driver", command: "node", args: ["scripts/pseudo-driver-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
+    { name: "local-storage", command: "node", args: ["scripts/local-storage-conformance.mjs"], cwd: root, timeoutMs: 30_000 },
+    { name: "platform-services", command: "node", args: ["scripts/platform-services-conformance.mjs"], cwd: root, timeoutMs: 30_000 },
+    { name: "animated-image", command: "node", args: ["scripts/animated-image-conformance.mjs"], cwd: root, timeoutMs: 60_000 },
 ];
 
 const skipped = tasks.filter((task) => task.platforms && !task.platforms.includes(process.platform));

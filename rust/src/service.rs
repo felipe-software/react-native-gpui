@@ -80,9 +80,14 @@ mod linux_window_registry;
 #[cfg(target_os = "macos")]
 mod liquid_glass;
 mod native_menu;
+mod notifications;
 mod perf_hud;
+mod platform_services;
 mod png_encode;
+mod processes;
 mod selection;
+mod sound;
+mod storage;
 mod style;
 
 use elements::webview::WebViewContent;
@@ -626,6 +631,9 @@ fn parse_json_tree(
                     .unwrap_or(100_000),
             )))
         }
+        elements::chat_list::ELEMENT_TYPE => Some(SpecializedElement::ChatList(
+            elements::chat_list::ChatListOptions::parse(obj.get("chatList")),
+        )),
         _ => None,
     }
     .map(Arc::new);
@@ -952,6 +960,7 @@ struct ServiceApp {
     // initial tree never reached the dump file, so dump-file consumers (harness
     // gates, capture tooling) read stale state while the live tree had moved on.
     debug_dump_scheduled: bool,
+    input_selection_at: Option<std::time::Instant>,
 }
 
 fn accumulate_pending_root_paint_only(
@@ -1266,6 +1275,23 @@ impl ServiceApp {
         })
     }
 
+    fn focused_input_selection_wins(&self, cx: &App) -> bool {
+        let Some(input) = self.focused_input.and_then(|id| self.inputs.get(&id)) else {
+            return false;
+        };
+        if input.read(cx).selected_text_value().is_empty() {
+            return false;
+        }
+        match (
+            self.input_selection_at,
+            elements::chat_list::selection_changed_at(),
+        ) {
+            (Some(input_at), Some(chat_at)) => input_at > chat_at,
+            (_, None) => true,
+            (None, Some(_)) => false,
+        }
+    }
+
     fn write_debug_dump(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.dump_tree_path.as_ref() else {
             return;
@@ -1340,6 +1366,7 @@ struct TreeMetadata {
     system_ids: HashSet<u64>,
     native_control_ids: HashSet<u64>,
     diff_ids: HashSet<u64>,
+    chat_list_ids: HashSet<u64>,
     scroll_ids: HashSet<u64>,
 }
 
@@ -1362,6 +1389,7 @@ impl TreeMetadata {
         elements::system::retain_system_views(&self.system_ids);
         elements::native_control::retain_native_controls(&self.native_control_ids);
         elements::retain_diff_state(&self.diff_ids);
+        elements::chat_list::retain(&self.chat_list_ids);
         elements::retain_scroll_state(&self.scroll_ids);
         elements::native_scroll::retain_drivers(&self.scroll_ids);
 
@@ -1559,6 +1587,9 @@ fn collect_tree_metadata(el: &Arc<ReactElement>, inherited_hidden: bool, out: &m
     }
     if el.element_type == "diff" {
         out.diff_ids.insert(el.global_id);
+    }
+    if el.element_type == elements::chat_list::ELEMENT_TYPE {
+        out.chat_list_ids.insert(el.global_id);
     }
     if matches!(el.style.overflow.as_deref(), Some("scroll") | Some("auto")) {
         out.scroll_ids.insert(el.global_id);
@@ -1895,9 +1926,10 @@ impl Render for ServiceApp {
                     // internal shaped lines and paint geometry without moving the host box.
                     // Prepaint still reshapes text/caret/selection/IME geometry on a retained
                     // frame; only the unchanged outer Taffy boxes are replayed.
-                    cx.observe(&state, move |_this, input, cx| {
-                        #[cfg(not(target_os = "macos"))]
-                        let _ = input;
+                    cx.observe(&state, move |this, input, cx| {
+                        if !input.read(cx).selected_text_value().is_empty() {
+                            this.input_selection_at = Some(std::time::Instant::now());
+                        }
                         #[cfg(target_os = "macos")]
                         {
                             let input = input.read(cx);
@@ -2124,9 +2156,21 @@ impl Render for ServiceApp {
             // (webview page copy unchanged).
             .on_action(|_: &gpui_component::input::Copy, _window, cx| {
                 if let Some(text) = crate::selection::selected_text() {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    crate::selection::copy_to_clipboard(text, cx);
                 }
             })
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Copy, _window, cx| {
+                    let Some(text) = elements::chat_list::selected_text() else {
+                        return;
+                    };
+                    if this.focused_input_selection_wins(cx) {
+                        return;
+                    }
+                    crate::selection::copy_to_clipboard(text, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_up(MouseButton::Left, |_event: &MouseUpEvent, _window, _cx| {
                 elements::finish_pointer_gesture();
             })
@@ -2155,6 +2199,25 @@ impl Render for ServiceApp {
                 crate::anim_overlay::arm_paint_only_frame();
             })
             .child(root);
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            frame =
+                frame.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    let modifiers = &event.keystroke.modifiers;
+                    let is_copy = event.keystroke.key == "c"
+                        && modifiers.secondary()
+                        && !modifiers.alt
+                        && !modifiers.shift;
+                    if !is_copy || !this.app_focus.is_focused(window) {
+                        return;
+                    }
+                    if let Some(text) = crate::selection::selected_text() {
+                        crate::selection::copy_to_clipboard(text, cx);
+                        cx.stop_propagation();
+                    }
+                }));
+        }
 
         if self.inspector.enabled() {
             frame = frame
@@ -2380,6 +2443,24 @@ pub(crate) enum Incoming {
         id: u64,
         session_id: String,
         frames: Vec<TerminalFrame>,
+    },
+    ChatList {
+        id: u64,
+        op: elements::chat_list::ChatListOp,
+    },
+    DebugChatListState {
+        id: Option<u64>,
+        reply: flume::Sender<serde_json::Value>,
+    },
+    DebugRealScroll {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        reply: flume::Sender<serde_json::Value>,
+    },
+    DebugClipboard {
+        reply: flume::Sender<serde_json::Value>,
     },
     NativeLayout {
         key: String,
@@ -2724,6 +2805,9 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
                 y: v.get("y").and_then(|x| x.as_f64()).map(|x| x as f32),
             }),
             "scrollToEnd" => id.map(|id| Incoming::ScrollToEnd { id }),
+            "chatList" => {
+                elements::chat_list::parse_command(v).map(|(id, op)| Incoming::ChatList { id, op })
+            }
             "terminalSession" => {
                 let id = id?;
                 let session_id = v.get("sessionId").and_then(|x| x.as_str())?;
@@ -3641,6 +3725,7 @@ fn main() {
             focused_input: None,
             last_debug_dump: None,
             debug_dump_scheduled: false,
+            input_selection_at: None,
             #[cfg(target_os = "linux")]
             context_menu: None,
         });
@@ -4152,6 +4237,46 @@ fn main() {
                             .update(cx, |_root, window, _cx| window.blur())
                             .is_err()
                         {
+                            break;
+                        }
+                    }
+                    Incoming::DebugRealScroll {
+                        x,
+                        y,
+                        dx,
+                        dy,
+                        reply,
+                    } => {
+                        let result = window_handle.update(cx, |_root, window, cx| {
+                            let position = gpui::point(px(x), px(y));
+                            dispatch_real_input(
+                                window,
+                                gpui::PlatformInput::MouseMove(MouseMoveEvent {
+                                    position,
+                                    pressed_button: None,
+                                    modifiers: gpui::Modifiers::default(),
+                                }),
+                                cx,
+                            );
+                            dispatch_real_input(
+                                window,
+                                gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                    position,
+                                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(dx), px(dy))),
+                                    touch_phase: gpui::TouchPhase::Moved,
+                                    ..Default::default()
+                                }),
+                                cx,
+                            );
+                        });
+                        let _ = reply.send(serde_json::json!({
+                            "ok": result.is_ok(),
+                            "type": "realscroll",
+                            "x": x,
+                            "y": y,
+                            "dy": dy,
+                        }));
+                        if result.is_err() {
                             break;
                         }
                     }
@@ -4897,6 +5022,29 @@ fn main() {
                         dy,
                         reply,
                     } => {
+                        let chat_list = pump
+                            .read_with(cx, |this, _| inspector::chat_list_at(&this.root, x, y))
+                            .ok()
+                            .flatten();
+                        if let Some(id) = chat_list {
+                            let applied = window_handle
+                                .update(cx, |_root, window, _cx| {
+                                    let applied = elements::chat_list::scroll_list(id, dy, window);
+                                    if applied {
+                                        crate::anim_overlay::arm_paint_only_frame();
+                                        window.refresh();
+                                    }
+                                    applied
+                                })
+                                .unwrap_or(false);
+                            let _ = reply.send(serde_json::json!({
+                                "ok": true,
+                                "type": "scrollAt",
+                                "targetId": id,
+                                "moved": applied,
+                            }));
+                            continue;
+                        }
                         let response = pump.update(cx, |this, cx| {
                             if let Some(id) = inspector::scroll_container_at(&this.root, x, y) {
                                 #[cfg(target_os = "macos")]
@@ -5307,6 +5455,7 @@ fn main() {
                         // GPUI window; the two windows run independently.
                         #[cfg(any(target_os = "macos", target_os = "linux"))]
                         {
+                            storage::flush_logged("new window");
                             if let Ok(exe) = std::env::current_exe() {
                                 let _ = std::process::Command::new(exe)
                                     .stdin(std::process::Stdio::null())
@@ -5382,7 +5531,24 @@ fn main() {
                         let applied = window_handle.update(cx, |_root, window, cx| {
                             pump.update(cx, |this, cx| {
                                 let target = inspector::tap_target_at(&this.root, x, y);
-                                if let Some(target) = target {
+                                if let Some(chat_target) =
+                                    target.as_ref().filter(|target| target.chat_list)
+                                {
+                                    let pressed = elements::chat_list::debug_tap(
+                                        chat_target.id,
+                                        x,
+                                        y,
+                                        MouseButton::Left,
+                                    );
+                                    cx.notify();
+                                    let _ = reply.send(serde_json::json!({
+                                        "ok": true,
+                                        "type": "tap",
+                                        "targetId": chat_target.id,
+                                        "focusedInput": false,
+                                        "chatListPress": pressed,
+                                    }));
+                                } else if let Some(target) = target {
                                     // a native AppKit control (NSButton) takes the real
                                     // target/action route via performClick:; only fall back
                                     // to a gpui synth-tap for ordinary gpui nodes.
@@ -5576,6 +5742,26 @@ fn main() {
                                 elements::present_session(id, session_id, frames);
                                 cx.notify();
                             }
+                            Incoming::ChatList { id, op } => {
+                                elements::chat_list::apply(id, op);
+                                crate::anim_overlay::arm_paint_only_frame();
+                                cx.notify();
+                            }
+                            Incoming::DebugChatListState { id, reply } => {
+                                let _ = reply.send(elements::chat_list::state_json(id));
+                            }
+                            Incoming::DebugClipboard { reply } => {
+                                #[cfg(target_os = "macos")]
+                                let text = read_general_pasteboard_string();
+                                #[cfg(not(target_os = "macos"))]
+                                let text = cx.read_from_clipboard().and_then(|item| item.text());
+                                let _ = reply.send(serde_json::json!({
+                                    "ok": true,
+                                    "type": "clipboard",
+                                    "text": text,
+                                    "lastCopy": crate::selection::last_copy(),
+                                }));
+                            }
                             Incoming::NativeLayout {
                                 key,
                                 width,
@@ -5723,6 +5909,7 @@ fn main() {
                             | Incoming::DebugRealKey { .. }
                             | Incoming::DebugDispatchAction { .. }
                             | Incoming::DebugRealTap { .. }
+                            | Incoming::DebugRealScroll { .. }
                             | Incoming::DebugRealContext { .. }
                             | Incoming::DebugRealDown { .. }
                             | Incoming::DebugRealUp { .. }

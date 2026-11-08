@@ -39,6 +39,8 @@ url = "2"
 # dup2 for redirecting stdout/stderr to a log file when launched as the bundle's
 # CFBundleExecutable (no shell wrapper to do the redirect). already in the tree.
 libc = "0.2"
+# OS random bytes for crypto.getRandomValues / randomUUID; already in the tree via flume.
+getrandom = "0.2"
 
 [build-dependencies]
 # compiles the JavaScriptCore C ABI shim — see build.rs.
@@ -50,6 +52,8 @@ pkg-config = "0.3"
 wayland-client = "0.31"
 # reads the XDG settings portal's color scheme before the first JS frame; same build GPUI uses.
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+# org.freedesktop.Notifications for the JS Notifications API; the same zbus ashpd and gpui use.
+zbus = { version = "5", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # native WebView content. lb-wry is Longbridge's wry fork that composites correctly
@@ -186,6 +190,16 @@ update-mode = "0.2.2-api-compatible-backports"
 #     resolves through `fc-match` (macOS sans names ask for `system-ui`, mono names for
 #     `monospace`), so the substitute keeps its weights. `font_id` caches the result per
 #     family, so fc-match runs once per family; without fc-match the old fallback applies.
+#
+# 13. Animated image pacing (src/elements/img.rs `schedule_next_frame`). Upstream advances a
+#     GIF/WebP frame only for an `img` with an element id, and then calls
+#     `request_animation_frame` on every layout, so a visible animation redraws the whole
+#     window at the display rate (~400fps under headless Mutter) although its frames change
+#     every 20-150ms. The element now spawns one timer per image that notifies the view when
+#     the current frame expires, keeping redraws at the animation's own rate. Delays of 10ms
+#     or less are shown for 100ms, as browsers do, so a zero-delay GIF cannot spin the
+#     renderer. Static images never schedule anything. rngpui's `<Image>` gives the inner
+#     img an id keyed by its source (rust/src/elements/image.rs).
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2-patched" }
 # Patched gpui-component 0.5.1 (vendored alongside gpui, same precedent). Divergences

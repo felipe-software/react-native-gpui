@@ -1,3 +1,4 @@
+pub mod chat_list;
 mod diff;
 mod div;
 mod image;
@@ -10,6 +11,7 @@ mod terminal;
 mod text;
 pub mod webview;
 
+pub use chat_list::ReactChatListElement;
 pub use diff::{DiffPayload, ReactDiffElement, retain_diff_state, scroll_diff_by};
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use div::{
@@ -215,6 +217,7 @@ pub enum SpecializedElement {
     NativeControl(InputPayload),
     Terminal(TerminalPayload),
     Diff(DiffPayload),
+    ChatList(chat_list::ChatListOptions),
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -390,6 +393,13 @@ impl ReactElement {
     pub fn diff_payload(&self) -> Option<&DiffPayload> {
         match self.specialized.as_deref() {
             Some(SpecializedElement::Diff(payload)) => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn chat_list_options(&self) -> Option<&chat_list::ChatListOptions> {
+        match self.specialized.as_deref() {
+            Some(SpecializedElement::ChatList(options)) => Some(options),
             _ => None,
         }
     }
@@ -658,6 +668,7 @@ pub fn is_paint_only_tree_update(previous: &Arc<ReactElement>, next: &Arc<ReactE
 fn specialized_change_is_paint_only(previous: &ReactElement, next: &ReactElement) -> bool {
     match (previous.specialized.as_deref(), next.specialized.as_deref()) {
         (Some(SpecializedElement::Terminal(_)), Some(SpecializedElement::Terminal(_))) => true,
+        (Some(SpecializedElement::ChatList(_)), Some(SpecializedElement::ChatList(_))) => true,
         (Some(SpecializedElement::Diff(previous)), Some(SpecializedElement::Diff(next))) => {
             previous.row_count() == next.row_count() && previous.diff_scroll == next.diff_scroll
         }
@@ -746,6 +757,7 @@ pub fn create_element(element: Arc<ReactElement>, window_id: u64) -> AnyElement 
             ReactNativeControlElement::new(element).into_any_element()
         }
         "diff" => ReactDiffElement::new(element).into_any_element(),
+        chat_list::ELEMENT_TYPE => ReactChatListElement::new(element).into_any_element(),
         _ => ReactDivElement::new(element, window_id).into_element(),
     }
 }

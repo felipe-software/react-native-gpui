@@ -50,6 +50,7 @@ export type SerializedNode = {
     collapsedPaths?: string[];
     diffScroll?: boolean;
     maxLines?: number;
+    chatList?: Record<string, unknown>;
     /** delta wire only: this (changed) node's large `text`/`src` is byte-identical to
      * what the host already holds for this globalId, so it was omitted — the host reuses
      * its prior value (parse_json_tree, same PRIOR_TREE_INDEX the node-level `ref` uses).
@@ -173,6 +174,7 @@ export type BridgeEvent =
           /** `pseudo` lane: absolute native hover/press state of the node's hitbox */
           hovered?: boolean;
           pressed?: boolean;
+          chat?: unknown;
       };
 
 export interface Bridge {

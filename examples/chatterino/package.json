@@ -1,0 +1,12 @@
+{
+    "name": "chatterino-gpui",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "node scripts/run.mjs",
+        "start:dev": "node scripts/run.mjs --dev",
+        "bundle": "node scripts/run.mjs --bundle-only",
+        "test": "node scripts/link-deps.mjs && bun test src",
+        "typecheck": "node scripts/link-deps.mjs && ../../ts/node_modules/.bin/tsc --noEmit -p ."
+    }
+}

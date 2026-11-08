@@ -56,9 +56,9 @@ re-renders.
 
 | Layout / display | Input / touch | Lists | Native content |
 | --- | --- | --- | --- |
-| `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` | `Image` `Svg` `WebView` |
+| `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` `ChatList` | `Image` `Svg` `WebView` |
 
-APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`.
+APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `fetch`, `crypto`).
 
 - **Real text input** (`TextInput`) is backed by [gpui-component](https://github.com/longbridge/gpui-component)'s editor: selection, IME, copy/paste, word motion, multiline. Resolved `style.color` and `placeholderTextColor` paint through the native editor. `onChange.nativeEvent` includes `isComposing` and `eventCount`, so controlled inputs can preserve native marked text while React commits catch up.
 - **Text truncation** follows React Native's `numberOfLines`: one-line labels truncate with ellipsis, and multi-line labels are line-clamped.
@@ -154,6 +154,100 @@ not create one React node per line.
 />
 ```
 
+## Native chat list
+
+`ChatList` is a virtualized chat log drawn by the renderer, built for Twitch-style
+clients. Messages never travel as props: the ref's methods stream them into the native
+element, so an append costs only the new messages. The element keeps up to
+`maxMessages` (default 1000, oldest dropped), lays out and paints only visible rows,
+and caches each message's layout until its width, font, scale or content changes.
+
+```tsx
+import { useEffect, useRef } from "react";
+import { ChatList, type ChatListHandle, type ChatListMessage } from "react-native-gpui";
+
+const message: ChatListMessage = {
+  id: "msg-1",
+  timestamp: "12:00",
+  marker: "#ff2d2d",
+  elements: [
+    { kind: "badge", name: "moderator", url: badgeUrl, width: 18, height: 18, tooltip: "Moderator" },
+    { kind: "user", text: "alice:", login: "alice", color: "#ff4040" },
+    { kind: "text", text: "hello world" },
+    { kind: "emote", name: "Kappa", url: kappaUrl, width: 28, height: 28 },
+  ],
+};
+
+function Channel({ chat }: { chat: ChatSource }) {
+  const list = useRef<ChatListHandle>(null);
+  useEffect(() => {
+    list.current?.prepend(chat.history());
+    return chat.onMessages((messages) => list.current?.append(messages));
+  }, [chat]);
+  return (
+    <ChatList
+      ref={list}
+      style={{ flex: 1, backgroundColor: "#191919" }}
+      fontSize={13}
+      showTimestamps
+      textColor="#ffffff"
+      mutedColor="#8c7f7f"
+      linkColor="#4286f4"
+      pauseOnHover
+      onPress={({ nativeEvent }) => {
+        if (nativeEvent.target === "user") openUserCard(nativeEvent.login);
+        if (nativeEvent.target === "link") openUrl(nativeEvent.url);
+        if (nativeEvent.button === "right") showMessageMenu(nativeEvent.messageId, nativeEvent.x, nativeEvent.y);
+      }}
+      onHover={({ nativeEvent }) => setTooltip(nativeEvent)}
+      onScrollState={({ nativeEvent }) => setMoreBelow(nativeEvent.atBottom ? 0 : nativeEvent.unseen)}
+    />
+  );
+}
+```
+
+When a moderator deletes the message, patch it in place (`hidden: true` removes it from
+the layout instead, like Chatterino's "hide moderated messages"):
+
+```tsx
+list.current?.update([{ id: "msg-1", disabled: true }]);
+```
+
+- Message flags: `disabled` and `historical` fade a message, `hidden` takes it out of the
+  layout until a patch sets it back, `background` fills the row, `marker` colors its
+  scrollbar tick. A badge's `background` paints behind its image (FFZ's custom moderator
+  badge).
+
+- Handle: `append`, `prepend` (history, oldest first), `update` (patches by `id`; pass
+  `""` to clear a string or color field), `clear`, `scrollToBottom`.
+- Elements are separated by one space; whitespace inside a text element separates words.
+  Set `trailingSpace: false` on an element to glue the next one to it (`@alice` + `,`).
+- Layout follows Chatterino: 8/4 px margins, elements bottom-aligned per line, emotes
+  count as 4 px shorter than they are (they overhang 2 px above and below), badges are not
+  scaled by `emoteScale`, zero-width emotes are centered over the previous emote, and a
+  `reply` renders as one truncated line at 0.8× size with a curve.
+- Images load through GPUI's image cache (http(s) URLs or file paths). Animated GIF and
+  WebP play while visible; the list schedules one repaint for the earliest frame change,
+  and an idle list without visible animation does not repaint.
+- Scrolling: wheel/trackpad, a thin scrollbar that widens on hover and shows `marker`
+  colors. At the bottom the list follows new messages; scrolled up, appends, prepends
+  and trimming keep the rows you are reading in place, and `onScrollState` reports
+  `{ atBottom, paused, unseen }`. `pauseOnHover` freezes the view while the pointer is
+  over the list.
+- Interaction: `onHover` fires with the user, link, emote or badge under the pointer and
+  its window-space bounds (`null` when it leaves), so tooltips can be React overlays.
+  `onPress` fires for user/link/emote/badge, or `message` for anything else, with the
+  button and pointer position. Left clicks fire on release unless the pointer moved more
+  than 15 px (that was a selection); right and middle clicks fire on press.
+- Selection: drag selects across messages, double-click selects a word, triple-click
+  selects the message body. Ctrl+C (Cmd+C on macOS) copies it, including while a
+  `TextInput` is focused, unless that input holds a newer selection of its own. Emotes
+  copy as their names, badges copy nothing.
+
+`bun run conformance:chat-list` checks wrapping, emote placement, timestamps, events,
+selection, copy and scroll anchoring against real pixels and bounds.
+`bun run perf:chat-list` measures 6 lists × 1000 messages at 20 messages/s.
+
 Use `PerformanceHUD.setEnabled(true)` or `rngpui do hud on` for the native
 frame/layout/paint overlay. `Renderer.getProvenance()` and
 `rngpui get provenance` report the exact renderer, service, GPUI, JavaScriptCore, and
@@ -211,6 +305,48 @@ window.ReactNativeWebView.postMessage("hello from the page")   // → onMessage
 window.addEventListener("message", (e) => { /* host postMessage */ })
 ```
 
+## Platform services
+
+Desktop services an app needs beyond rendering. Each one runs off the JS thread in the
+native service and resolves a promise when it is done.
+
+```tsx
+import { LocalStorage, Notifications, Processes, Sound, randomUUID } from "react-native-gpui";
+
+localStorage.setItem("accounts", JSON.stringify(accounts)); // survives restarts
+await LocalStorage.flush();                                  // optional: write now
+
+const shown = await Notifications.show({ title: "forsen mentioned you", body: message });
+await Sound.play();                                // built-in "ping"
+await Sound.play("/home/me/sounds/mention.wav", { volume: 0.6 });
+await Sound.play("https://example.com/alert.wav");
+
+const streaming = (await Processes.findRunning(["obs", "obs64.exe"])).length > 0;
+const nonce = randomUUID();
+```
+
+| API | Behavior |
+| --- | --- |
+| `localStorage` | The synchronous Web Storage API. Loaded once at startup and written back atomically (temp file + rename, 0600) 250ms after the last change, at most 2s late, and again on exit, `SIGTERM`/`SIGINT`/`SIGHUP`, reload, and before `NativeWindow.open()`. Changes from two processes of the same app merge per key. An unreadable file is moved aside as `local-storage.json.corrupt-<ms>` and the store starts empty. |
+| `LocalStorage.flush(): Promise<void>` | Writes pending changes now. `LocalStorage.getPath()` returns the backing file (or `null`), `LocalStorage.isPersistent()` whether there is one. |
+| `Notifications.show({ title, body? }): Promise<boolean>` | Linux: `org.freedesktop.Notifications` over D-Bus (body markup is escaped when the server renders markup). macOS: `osascript display notification`. Resolves `false` when nothing could show it; rejects without a title. |
+| `Sound.play(source = "ping", { volume? }): Promise<void>` | `"ping"` is synthesized; otherwise a file path, `file://` URL, or `http(s)` URL (URL sounds are cached in memory). Sources are capped at 32 MiB and 8 sounds play at once. Decodes WAV (8/16/24/32-bit PCM, 32/64-bit float); other formats reject with the reason. Resolves when playback ends. |
+| `Processes.findRunning(names): Promise<string[]>` | The given names that match a running process, compared case-insensitively against the process name and its executable's file name (Linux `/proc/*/comm` and `cmdline`, macOS `ps`). |
+| `fetch` | `Response` has `status`, `statusText`, `ok` (2xx), `url` (after redirects), `redirected`, `headers` (`get`/`has`/`forEach`/`entries`/`keys`/`values`, iterable), `text()`, `json()`, `arrayBuffer()`, `clone()`. Bodies may be strings, `URLSearchParams`, `ArrayBuffer`, or any typed array/`DataView`; network errors reject with `TypeError`. |
+| `crypto.getRandomValues`, `crypto.randomUUID` | Backed by the OS random number generator; also exported as `getRandomValues()` / `randomUUID()`. |
+| `<Image>` | Animated GIF and WebP play, redrawing only when a frame is due; still images never schedule redraws. |
+
+The data file lives at `$XDG_DATA_HOME/<app id>/local-storage.json` (default
+`~/.local/share`) on Linux and `~/Library/Application Support/<app id>/local-storage.json` on
+macOS. The app id is `RNGPUI_APP_ID`, else `RNGPUI_APP_NAME`, else `react-native-gpui`.
+
+| Variable | Effect |
+| --- | --- |
+| `RNGPUI_STORAGE_DIR` | directory holding `local-storage.json`, overriding the data dir |
+| `RNGPUI_TEST_MODE` | without `RNGPUI_STORAGE_DIR`, keeps `localStorage` in memory; also suppresses real notifications and sound output |
+| `RNGPUI_FAKE_NOTIFICATIONS=<file>` | append each notification as a JSON line instead of showing it |
+| `RNGPUI_FAKE_SOUND_DIR=<dir>` | write each decoded sound as `sound-NNN.wav` instead of playing it |
+
 ## Building from source
 
 This package ships a prebuilt `rngpui-service` binary in `native/`, built for the
@@ -247,6 +383,11 @@ bun run conformance:input-runtime    # nonactivating focus, tab, IME, controlled
 bun run conformance:portal           # Portal overlay and TextInput-in-portal behavior
 bun run conformance:native-layout    # native layout override without React width state
 bun run conformance:text-lines       # visual fixture for Text numberOfLines
+bun run conformance:chat-list        # ChatList layout, events, selection, scroll anchoring
+bun run perf:chat-list               # ChatList CPU and frame numbers under load
+bun run conformance:local-storage    # localStorage across restarts, SIGTERM, corruption
+bun run conformance:platform-services # fetch, crypto, notifications, sound, processes
+bun run conformance:animated-image   # GIF/WebP frames advance, still images stay idle
 bun run superconductor               # native shell + WebView content hybrid
 ```
 
