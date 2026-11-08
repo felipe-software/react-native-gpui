@@ -140,6 +140,8 @@ impl Element for ReactImageElement {
             return;
         }
 
+        #[cfg(not(target_os = "macos"))]
+        let _ = (bounds, &prepaint);
         if let Some(child) = self.child.as_mut() {
             // <Image opacity=…> fades the image; gpui's sprite paint multiplies by the
             // element-opacity stack, but nothing pushes it for a top-level image.

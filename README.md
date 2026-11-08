@@ -13,4 +13,4 @@ renderer service is in [`rust/`](rust/).
 npm install react-native-gpui
 ```
 
-Currently macOS arm64 only (GPUI/Metal). MIT licensed.
+Runs on macOS arm64 (Metal) and Linux x86_64 (Vulkan, Wayland or X11). MIT licensed.

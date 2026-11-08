@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { isServiceLibrary } from "./native-libs.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,7 +115,7 @@ function stageServiceDylibs(binary) {
     const ghostty = findDylibs(resolve(releaseDir, "build"), "libghostty-vt");
     const stagedGhostty = findDylibs(releaseDir, "libghostty-vt");
     if (!ghostty.length && !stagedGhostty.length) {
-        throw new Error(`libghostty-vt dylib not found under ${resolve(releaseDir, "build")} or ${releaseDir}`);
+        throw new Error(`libghostty-vt library not found under ${resolve(releaseDir, "build")} or ${releaseDir}`);
     }
     for (const dylib of ghostty) {
         const destination = join(releaseDir, dylib.split("/").pop());
@@ -131,7 +132,7 @@ function findDylibs(dir, prefix) {
         for (const entry of readdirSync(current, { withFileTypes: true })) {
             const path = join(current, entry.name);
             if (entry.isDirectory()) stack.push(path);
-            else if (entry.name.endsWith(".dylib") && entry.name.startsWith(prefix)) out.push(path);
+            else if (isServiceLibrary(entry.name, prefix)) out.push(path);
         }
     }
     return out;

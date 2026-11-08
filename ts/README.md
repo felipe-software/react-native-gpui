@@ -1,6 +1,6 @@
 # react-native-gpui
 
-Write **React Native** components — render them **natively** with [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated Rust UI framework). No browser, no Electron, no mobile host. Your React tree is reconciled into a GPUI window on Metal, with a real `react-reconciler` (so hooks, state, and effects all work) and a typed component surface that mirrors React Native.
+Write **React Native** components — render them **natively** with [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated Rust UI framework). No browser, no Electron, no mobile host. Your React tree is reconciled into a GPUI window on Metal (macOS) or Vulkan (Linux), with a real `react-reconciler` (so hooks, state, and effects all work) and a typed component surface that mirrors React Native.
 
 It also supports the **"native shell, web content"** hybrid: embed a native `WebView` (WKWebView via `wry`) anywhere in the tree for web-grade content with native scroll + selection, while the rest of the UI stays native GPUI.
 
@@ -213,8 +213,19 @@ window.addEventListener("message", (e) => { /* host postMessage */ })
 
 ## Building from source
 
-This package ships a prebuilt `rngpui-service` binary in `native/`. To build it
-yourself you need a Rust toolchain; macOS supplies the JavaScriptCore framework:
+This package ships a prebuilt `rngpui-service` binary in `native/`, built for the
+platform that ran `npm run build`. To build it yourself you need a Rust toolchain and
+Zig for the terminal element. macOS supplies the JavaScriptCore framework; on Linux,
+install a C/C++ toolchain and WebKitGTK's JavaScriptCore headers:
+
+```sh
+# Debian/Ubuntu (Fedora: gcc-c++ pkgconf javascriptcoregtk4.1-devel libxkbcommon-x11-devel alsa-lib-devel)
+sudo apt install build-essential pkg-config libjavascriptcoregtk-4.1-dev \
+  libxkbcommon-x11-dev libasound2-dev libfontconfig-dev libfreetype-dev
+```
+
+`build:rust` checks out the Ghostty commit `libghostty-vt-sys` pins (it needs Zig 0.15.2)
+unless `GHOSTTY_SOURCE_DIR` points at a Ghostty source tree.
 
 ```sh
 npm run build        # builds the Rust service, copies it into native/, then tsc → dist/
@@ -247,7 +258,27 @@ bun run pixel-diff before.png after.png --crop 0,0,540,300 --diff-out /tmp/rngpu
 
 ## Status & platform
 
-macOS (Metal) is the validated target. GPUI builds here with the `runtime_shaders` feature. The architecture (TS reconciler ↔ native service) is portable to GPUI's other backends.
+macOS (Metal) is the reference target. GPUI builds here with the `runtime_shaders` feature.
+
+Linux runs on GPUI's Vulkan renderer under Wayland or X11, picked automatically: Wayland
+when `WAYLAND_DISPLAY` answers, otherwise X11. It needs a Vulkan driver (Mesa or the
+vendor driver) and WebKitGTK's JavaScriptCore at runtime (`libjavascriptcoregtk-4.1`,
+`-6.0` or `-4.0`, whichever is installed). Compositors that leave decorations to the
+app, like GNOME, get a client-side title bar with window controls and resize edges.
+
+| Variable | Linux effect |
+| --- | --- |
+| `RNGPUI_LINUX_BACKEND=wayland\|x11` | force a display backend (default `auto`) |
+| `RNGPUI_LINUX_DECORATIONS=client\|server` | force client- or server-side window decorations |
+| `RNGPUI_WINDOW_TITLE`, `RNGPUI_APP_ID` | window title and Wayland app id (`.desktop` matching) |
+| `RNGPUI_TRANSPARENT_WINDOW=1` | skip the opaque window backdrop |
+| `RNGPUI_FRAME_HZ` | `requestAnimationFrame` rate (default 60) |
+| `RNGPUI_JSC_LIBRARY` | load JavaScriptCore from a specific shared library |
+| `RNGPUI_FRAME_CAPTURE=1` | let the dev CLI capture frames of an app it did not launch |
+
+Not on Linux yet: `<WebView>` renders as an empty view, `<NativeButton>`/`<NativeTextInput>`
+and system materials have no AppKit to wrap, in-app backdrop blur draws its tint without the
+blur, and there is no accessibility tree or dock badge.
 
 ## License
 

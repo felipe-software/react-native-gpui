@@ -11,8 +11,7 @@ mod text;
 pub mod webview;
 
 pub use diff::{DiffPayload, ReactDiffElement, retain_diff_state, scroll_diff_by};
-#[cfg(not(target_os = "macos"))]
-pub use div::scroll_by;
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use div::{
     ReactDivElement, animate_native_layout_override, begin_pointer_frame, claim_native_scroll,
     clear_native_layout_override, ease_out_cubic, finish_pointer_gesture, lerp,
@@ -21,6 +20,8 @@ pub use div::{
     set_native_layout_override, stacked_child_indices_for, synth_drag_end, synth_drag_move,
     synth_drag_start, synth_tap,
 };
+#[cfg(not(target_os = "macos"))]
+pub use div::{scroll_by, scroll_offset};
 pub use image::ReactImageElement;
 pub use input::ReactInputElement;
 pub use native_control::ReactNativeControlElement;

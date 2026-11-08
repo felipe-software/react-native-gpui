@@ -30,6 +30,24 @@ pub fn icon_bytes(path: &str) -> Option<&'static str> {
         "search.svg" => {
             r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></g></svg>"##
         }
+        "icons/check.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##
+        }
+        "icons/chevron-right.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##
+        }
+        "icons/window-minimize.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round"/></svg>"##
+        }
+        "icons/window-maximize.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke="black" stroke-width="1.6"/></svg>"##
+        }
+        "icons/window-restore.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="black" stroke-width="1.6" stroke-linejoin="round"><rect x="5" y="9" width="10" height="10" rx="1.5"/><path d="M9 9V6.5A1.5 1.5 0 0 1 10.5 5h7A1.5 1.5 0 0 1 19 6.5v7a1.5 1.5 0 0 1-1.5 1.5H15"/></g></svg>"##
+        }
+        "icons/window-close.svg" => {
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round"/></svg>"##
+        }
         _ => return None,
     })
 }
