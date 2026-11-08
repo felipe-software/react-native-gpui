@@ -16,6 +16,43 @@ bun run scripts/bundle-app.mjs examples/kitchen-sink.tsx /tmp/kitchen.js
 RNGPUI_BUNDLE=/tmp/kitchen.js RNGPUI_NO_ACTIVATE=1 ../rust/target/release/rngpui-service
 ```
 
+## Linux
+
+The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Wayland or X11.
+
+- Build deps: a C/C++ toolchain, `pkg-config`, WebKitGTK's JavaScriptCore headers
+  (`libjavascriptcoregtk-4.1-dev`), `libxkbcommon-x11-dev`, `libasound2-dev`, and Zig 0.15.2.
+  `npm run build:rust` (scripts/build-rust.mjs) checks out the Ghostty commit that
+  `libghostty-vt-sys` pins into `~/.cache/rngpui/` unless `GHOSTTY_SOURCE_DIR` is set; the
+  crate's own fetch cannot be used because it patches `build.zig` text that commit lacks.
+- Runtime: JavaScriptCore is resolved with `dlopen` (rust/jsc_shim/jsc_loader_linux.cpp), so
+  any of `libjavascriptcoregtk-4.1/6.0/4.0` works and a missing one prints install hints.
+  `libghostty-vt.so.0` ships beside the binary and is found through an `$ORIGIN` rpath.
+- Display: rust/src/linux_display.rs picks Wayland when its socket answers, else X11
+  (`RNGPUI_LINUX_BACKEND` overrides). It probes the Wayland registry for
+  `zxdg_decoration_manager_v1`; without it (GNOME) rust/src/linux_frame.rs draws the title bar
+  (gpui-component `TitleBar`), border, shadow and resize edges, and the window opens larger by
+  that frame so the app keeps its requested content size. Test and borderless windows skip it.
+- The frame's app content must stay the FIRST child that requests layout: the retained-layout
+  fast path resets the layout tree when the app view renders, so any layout node created
+  before it in the same frame is invalidated (a taffy "invalid SlotMap key" panic).
+- Capture: there is no CGWindowList, so the renderer reads back its own swapchain image
+  (`Window::capture_next_frame`, enabled by `RNGPUI_CAPTURE_PNG`, `RNGPUI_FRAME_CAPTURE` or
+  `RNGPUI_TEST_MODE`). Wayland cannot list other clients' windows either: each service writes
+  `$XDG_RUNTIME_DIR/rngpui-windows/<pid>.json` after its first painted tree, and
+  `conformance-utils.listWindows()` reads those. `captureWindow()` asks a service for a frame by
+  writing the target path to `<pid>.capture`.
+- Windows cannot be placed offscreen on Wayland. To run the suite without windows on your
+  desktop, start a private compositor and point the tests at it:
+  `dbus-run-session -- mutter --headless --wayland --no-x11 --wayland-display=rngpui-headless-0
+  --virtual-monitor 1920x1080 &` then `WAYLAND_DISPLAY=rngpui-headless-0 bun run test`.
+  Headless Mutter sends no frame callback without damage, so `native-layout` stalls there
+  while passing on a real session.
+- Gates that drive macOS-only tools (cua-driver, pbcopy, swift/sips) or WKWebView are marked
+  `platforms: ["darwin"]` in scripts/test-suite.mjs and skipped elsewhere.
+- Not on Linux yet: `<WebView>` (wry can only embed into X11 windows), AppKit native controls,
+  system materials, in-app backdrop blur (the tint draws, the blur does not), accessibility.
+
 ## Releasing into Team Machine
 
 `~/team-machine/gui` consumes this package locally, but it is not symlinked. The

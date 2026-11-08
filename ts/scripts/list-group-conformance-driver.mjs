@@ -43,7 +43,7 @@ child.stderr.on("data", (chunk) => {
 try {
     const { pid, window } = await waitForFixtureWindow();
     assertFixtureNotFrontmost("during");
-    const tree = await waitForSerializedTree();
+    const tree = await waitForSerializedTree((candidate) => hasListGroup(candidate, "primary-list"));
     if (!hasListGroup(tree, "primary-list")) {
         throw new Error(`missing nativeListGroup primary-list in serialized tree`);
     }
@@ -97,19 +97,22 @@ function assertFixtureNotFrontmost(label) {
     }
 }
 
-async function waitForSerializedTree() {
+async function waitForSerializedTree(isReady) {
     const started = Date.now();
     let lastError = "";
+    let latest = null;
     while (Date.now() - started < deadlineMs) {
         if (existsSync(treePath)) {
             try {
-                return JSON.parse(readFileSync(treePath, "utf8"));
+                latest = JSON.parse(readFileSync(treePath, "utf8"));
+                if (isReady(latest)) return latest;
             } catch (error) {
                 lastError = error instanceof Error ? error.message : String(error);
             }
         }
         await sleep(50);
     }
+    if (latest) return latest;
     throw new Error(`timed out waiting for serialized tree: ${lastError}`);
 }
 

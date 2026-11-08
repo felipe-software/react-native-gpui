@@ -1,7 +1,7 @@
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 
 export const cuaDriver =
     process.env.CUA_DRIVER ||
@@ -67,7 +67,39 @@ export async function waitForWindow(match, { timeoutMs = 5000, isFixtureExited, 
     throw new Error(`GPUI window was not found (no progress for ${timeoutMs}ms)`);
 }
 
+export function linuxWindowRegistryDir() {
+    return join(process.env.XDG_RUNTIME_DIR || tmpdir(), "rngpui-windows");
+}
+
+function listLinuxWindows() {
+    const dir = linuxWindowRegistryDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir)
+        .filter((entry) => entry.endsWith(".json"))
+        .map((entry) => {
+            try {
+                return JSON.parse(readFileSync(join(dir, entry), "utf8"));
+            } catch {
+                return null;
+            }
+        })
+        .filter((window) => window && isLiveService(window.pid))
+        .map((window) => ({
+            ...window,
+            bounds: { x: window.x, y: window.y, width: window.width, height: window.height },
+        }));
+}
+
+function isLiveService(pid) {
+    try {
+        return readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "rngpui-service";
+    } catch {
+        return false;
+    }
+}
+
 export function listWindows() {
+    if (process.platform === "linux") return listLinuxWindows();
     const swift = `
 import Foundation
 import CoreGraphics
@@ -129,6 +161,10 @@ for window in list {
 }
 
 export function captureWindow(window, path) {
+    if (process.platform === "linux") {
+        captureLinuxWindow(window, path);
+        return;
+    }
     execFileSync(
         cuaDriver,
         [
@@ -146,11 +182,30 @@ export function captureWindow(window, path) {
     if (!existsSync(path)) throw new Error(`screenshot was not written at ${path}`);
 }
 
+function captureLinuxWindow(window, path) {
+    if (!window.capture) {
+        throw new Error(
+            `rngpui-service pid ${window.pid} cannot capture frames; start it with RNGPUI_FRAME_CAPTURE=1 (test and CLI launches enable it)`,
+        );
+    }
+    const target = resolve(path);
+    rmSync(target, { force: true });
+    const request = join(linuxWindowRegistryDir(), `${window.pid}.capture`);
+    writeFileSync(`${request}.staging`, target);
+    renameSync(`${request}.staging`, request);
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(target)) {
+        if (Date.now() > deadline) throw new Error(`rngpui-service pid ${window.pid} did not write a frame to ${target}`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+}
+
 export function frontmostApp() {
     return frontmostProcess().name;
 }
 
 export function frontmostProcess() {
+    if (process.platform !== "darwin") return { pid: 0, name: "" };
     const raw = execFileSync(
         "swift",
         [
@@ -171,6 +226,7 @@ print("\\(app?.processIdentifier ?? 0)\\t\\(app?.localizedName ?? "")")
 }
 
 export function screenFrames() {
+    if (process.platform !== "darwin") return [];
     const swift = `
 import AppKit
 for screen in NSScreen.screens {

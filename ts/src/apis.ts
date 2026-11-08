@@ -30,17 +30,22 @@ export function useWindowDimensions(): ScaledSize {
     return dims;
 }
 
-type PlatformOSType = "ios" | "android" | "macos" | "windows" | "web";
+type PlatformOSType = "ios" | "android" | "macos" | "linux" | "windows" | "web";
+
+function hostOS(): PlatformOSType {
+    const platform = (globalThis as { process?: { platform?: string } }).process?.platform;
+    return platform === "linux" ? "linux" : "macos";
+}
 
 export const Platform = {
-    OS: "macos" as PlatformOSType,
+    OS: hostOS(),
     Version: 0 as number | string,
     isPad: false,
     isTV: false,
     isTesting: false,
     constants: {},
     select<T>(spec: { [k in PlatformOSType | "native" | "default"]?: T }): T | undefined {
-        if ("macos" in spec) return spec.macos;
+        if (Platform.OS in spec) return spec[Platform.OS];
         if ("native" in spec) return spec.native;
         return spec.default;
     },

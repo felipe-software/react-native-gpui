@@ -22,6 +22,7 @@
 //! consumers see the identical interface either way.
 
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -109,9 +110,11 @@ fn stop() {
 // offscreen test windows need) and it's what the vendored gpui's own window
 // pacing uses. The link is created once and never released (process lifetime).
 
+#[cfg(target_os = "macos")]
 #[allow(non_camel_case_types)]
 type CVDisplayLinkRef = *mut c_void;
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreVideo", kind = "framework")]
 unsafe extern "C" {
     fn CVDisplayLinkCreateWithCGDisplay(display_id: u32, link_out: *mut CVDisplayLinkRef) -> i32;
@@ -131,11 +134,13 @@ unsafe extern "C" {
     fn CVDisplayLinkStop(link: CVDisplayLinkRef) -> i32;
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
 }
 
+#[cfg(target_os = "macos")]
 extern "C" fn display_link_callback(
     _link: CVDisplayLinkRef,
     _now: *const c_void,
@@ -149,22 +154,45 @@ extern "C" fn display_link_callback(
 }
 
 enum Clock {
-    DisplayLink {
-        link: SendPtr,
-        running: bool,
-    },
+    #[cfg(target_os = "macos")]
+    DisplayLink { link: SendPtr, running: bool },
     /// No display available (headless): a 120Hz timer thread drives `tick()`.
     Timer {
         running: &'static std::sync::atomic::AtomicBool,
+        interval: Duration,
     },
 }
 
+#[cfg(target_os = "macos")]
 struct SendPtr(CVDisplayLinkRef);
 // CVDisplayLinkStart/Stop are documented thread-safe; the pointer is only used
 // for those two calls under the CLOCK mutex.
+#[cfg(target_os = "macos")]
 unsafe impl Send for SendPtr {}
 
+fn timer_clock(interval: Duration) -> Clock {
+    let running: &'static std::sync::atomic::AtomicBool =
+        Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+    Clock::Timer { running, interval }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn linux_frame_interval() -> Duration {
+    let hz = std::env::var("RNGPUI_FRAME_HZ")
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|hz| hz.is_finite() && *hz >= 1.0 && *hz <= 1000.0)
+        .unwrap_or(60.0);
+    Duration::from_secs_f64(1.0 / hz)
+}
+
 impl Clock {
+    #[cfg(not(target_os = "macos"))]
+    fn new() -> Clock {
+        timer_clock(linux_frame_interval())
+    }
+
+    #[cfg(target_os = "macos")]
     fn new() -> Clock {
         unsafe {
             let mut link: CVDisplayLinkRef = std::ptr::null_mut();
@@ -179,29 +207,36 @@ impl Clock {
             eprintln!(
                 "[frame_clock] CVDisplayLink unavailable (CVReturn {created}); using 120Hz timer"
             );
-            let running: &'static std::sync::atomic::AtomicBool =
-                Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
-            Clock::Timer { running }
+            timer_clock(Duration::from_micros(8333))
         }
     }
 
     fn start(&mut self) {
         match self {
+            #[cfg(target_os = "macos")]
             Clock::DisplayLink { link, running } => {
                 if !*running {
                     unsafe { CVDisplayLinkStart(link.0) };
                     *running = true;
                 }
             }
-            Clock::Timer { running } => {
+            Clock::Timer { running, interval } => {
                 let running: &'static std::sync::atomic::AtomicBool = running;
+                let interval = *interval;
                 if !running.swap(true, Ordering::AcqRel) {
                     std::thread::Builder::new()
                         .name("frame-clock-timer".into())
                         .spawn(move || {
+                            let mut deadline = std::time::Instant::now();
                             while running.load(Ordering::Acquire) {
                                 tick();
-                                std::thread::sleep(Duration::from_micros(8333));
+                                deadline += interval;
+                                let now = std::time::Instant::now();
+                                if deadline > now {
+                                    std::thread::sleep(deadline - now);
+                                } else {
+                                    deadline = now;
+                                }
                             }
                         })
                         .expect("spawn frame-clock timer thread");
@@ -212,13 +247,14 @@ impl Clock {
 
     fn stop(&mut self) {
         match self {
+            #[cfg(target_os = "macos")]
             Clock::DisplayLink { link, running } => {
                 if *running {
                     unsafe { CVDisplayLinkStop(link.0) };
                     *running = false;
                 }
             }
-            Clock::Timer { running } => {
+            Clock::Timer { running, .. } => {
                 running.store(false, Ordering::Release);
             }
         }

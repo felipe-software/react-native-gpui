@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { captureWindow, listWindows, sleep, waitForServicePid, waitForWindow } from "../scripts/conformance-utils.mjs";
+import { isServiceLibrary } from "../scripts/native-libs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const tsRoot = resolve(here, "..");
@@ -41,6 +42,7 @@ export interface GpuiWindow {
     width: number;
     height: number;
     bounds: { x: number; y: number; width: number; height: number };
+    rngpui?: boolean;
 }
 
 export interface LaunchedHost {
@@ -207,7 +209,7 @@ function stageServiceDylibs(binary: string) {
     const releaseDir = dirname(binary);
     const ghostty = findDylibs(resolve(tsRoot, "..", "rust", "target", "release", "build"), "libghostty-vt");
     for (const dylib of ghostty) {
-        const dest = join(releaseDir, dylib.split("/").pop() || "libghostty-vt.dylib");
+        const dest = join(releaseDir, dylib.split("/").pop()!);
         if (!existsSync(dest)) copyFileSync(dylib, dest);
     }
 }
@@ -221,7 +223,7 @@ function findDylibs(dir: string, prefix: string): string[] {
         for (const entry of readdirSync(current, { withFileTypes: true })) {
             const path = join(current, entry.name);
             if (entry.isDirectory()) stack.push(path);
-            else if (entry.name.endsWith(".dylib") && entry.name.startsWith(prefix)) out.push(path);
+            else if (isServiceLibrary(entry.name, prefix)) out.push(path);
         }
     }
     return out;
@@ -486,7 +488,7 @@ function makeLaunchedHost({
 
 export async function attachHost(): Promise<AttachedHost> {
     const candidates = (listWindows() as GpuiWindow[])
-        .filter((window) => window.title === "react-native-gpui")
+        .filter((window) => window.title === "react-native-gpui" || window.rngpui === true)
         .map((window) => ({ window, meta: ownerMetaForWindow(window) }))
         .sort((a, b) => {
             const ad = isMetaDriveable(a.meta) ? 0 : 1;

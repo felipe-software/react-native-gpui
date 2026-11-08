@@ -15,6 +15,20 @@ const SHADOW_SIZE: Pixels = px(12.0);
 const BORDER_SIZE: Pixels = px(1.0);
 pub(crate) const BORDER_RADIUS: Pixels = px(0.0);
 
+static CLIENT_FRAME_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_client_frame_enabled(enabled: bool) {
+    CLIENT_FRAME_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn window_decorations(window: &Window) -> Decorations {
+    if CLIENT_FRAME_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+        window.window_decorations()
+    } else {
+        Decorations::Server
+    }
+}
+
 /// Create a new window border.
 pub fn window_border() -> WindowBorder {
     WindowBorder::new()
@@ -36,7 +50,7 @@ impl WindowBorder {
 
 /// Get the window paddings.
 pub fn window_paddings(window: &Window) -> Edges<Pixels> {
-    match window.window_decorations() {
+    match window_decorations(window) {
         Decorations::Server => Edges::all(px(0.0)),
         Decorations::Client { tiling } => {
             let mut paddings = Edges::all(SHADOW_SIZE);
@@ -65,8 +79,10 @@ impl ParentElement for WindowBorder {
 
 impl RenderOnce for WindowBorder {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let decorations = window.window_decorations();
-        window.set_client_inset(SHADOW_SIZE);
+        let decorations = window_decorations(window);
+        if matches!(decorations, Decorations::Client { .. }) {
+            window.set_client_inset(SHADOW_SIZE);
+        }
 
         div()
             .id("window-backdrop")

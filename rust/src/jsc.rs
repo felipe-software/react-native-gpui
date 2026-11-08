@@ -87,8 +87,7 @@ fn require_jit(rt: *mut c_void) {
         )
     };
     if status != 0 {
-        let error = unsafe { CStr::from_ptr(error.as_ptr() as *const c_char) }
-            .to_string_lossy();
+        let error = unsafe { CStr::from_ptr(error.as_ptr() as *const c_char) }.to_string_lossy();
         eprintln!("[jsc] fatal: JIT liveness probe failed: {error}");
         std::process::exit(1);
     }
@@ -96,7 +95,12 @@ fn require_jit(rt: *mut c_void) {
         .ok()
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(100.0);
-    if elapsed_ms > max_ms {
+    if elapsed_ms > max_ms && cfg!(not(target_os = "macos")) {
+        eprintln!(
+            "[jsc] JIT liveness probe took {:.1}ms (limit {:.1}ms); continuing",
+            elapsed_ms, max_ms
+        );
+    } else if elapsed_ms > max_ms {
         eprintln!(
             "[jsc] fatal: JIT liveness probe took {:.1}ms (limit {:.1}ms); the process is interpreter-shaped. Sign the executable with com.apple.security.cs.allow-jit",
             elapsed_ms, max_ms
@@ -999,7 +1003,31 @@ fn system_color_scheme() -> &'static str {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+fn host_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_color_scheme() -> &'static str {
+    use ashpd::desktop::settings::{ColorScheme, Settings};
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let scheme = futures::executor::block_on(async {
+            Settings::new().await.ok()?.color_scheme().await.ok()
+        });
+        let _ = sender.send(scheme);
+    });
+    match receiver.recv_timeout(Duration::from_millis(300)) {
+        Ok(Some(ColorScheme::PreferDark)) => "dark",
+        _ => "light",
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn system_color_scheme() -> &'static str {
     "dark"
 }
@@ -1074,9 +1102,10 @@ pub fn start(bundle: Vec<u8>, tree_tx: Sender<Incoming>, tree_json_tx: Sender<St
 
             let env = std::env::vars().collect::<HashMap<String, String>>();
             let env_script = format!(
-                "globalThis.process={{env:{},pid:{}}};globalThis.__rngpuiInitialColorScheme=\"{}\";",
+                "globalThis.process={{env:{},pid:{},platform:\"{}\"}};globalThis.__rngpuiInitialColorScheme=\"{}\";",
                 serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string()),
                 std::process::id(),
+                host_platform(),
                 system_color_scheme()
             );
             if let Err(e) = eval(rt, env_script.as_bytes(), "host-env.js") {

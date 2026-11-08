@@ -52,24 +52,28 @@ const tasks = [
         cwd: root,
         env: conformanceEnv(),
     },
-    { name: "input", command: "node", args: ["scripts/input-conformance-driver.mjs"], cwd: root, timeoutMs: 12_000 },
+    { name: "input", platforms: ["darwin"], command: "node", args: ["scripts/input-conformance-driver.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "list-group", command: "node", args: ["scripts/list-group-conformance-driver.mjs"], cwd: root, timeoutMs: 20_000 },
-    { name: "inspector", command: "node", args: ["scripts/inspector-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
+    { name: "inspector", platforms: ["darwin"], command: "node", args: ["scripts/inspector-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "hit-test", command: "node", args: ["scripts/hit-test-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
     { name: "occlusion", command: "node", args: ["scripts/overlay-occlusion-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
     { name: "reload", command: "node", args: ["scripts/reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },
     { name: "hot-reload", command: "node", args: ["scripts/hot-reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },
     { name: "hot-reload-cli", command: "node", args: ["scripts/hot-reload-cli-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "text-lines", command: "bun", args: ["run", "scripts/text-lines-conformance.mjs"], cwd: root },
-    { name: "rounded-overflow", command: "bun", args: ["run", "scripts/rounded-overflow-conformance.mjs"], cwd: root },
+    { name: "rounded-overflow", platforms: ["darwin"], command: "bun", args: ["run", "scripts/rounded-overflow-conformance.mjs"], cwd: root },
     { name: "animation-diff", command: "bun", args: ["run", "scripts/animation-frame-diff.mjs"], cwd: root },
     { name: "opacity", command: "bun", args: ["run", "scripts/check-opacity-conformance.mjs"], cwd: root, timeoutMs: 120_000 },
     { name: "opacity-ramp", command: "bun", args: ["run", "scripts/check-opacity-ramp-conformance.mjs"], cwd: root, timeoutMs: 120_000 },
     { name: "offthread-stall", command: "node", args: ["scripts/offthread-stall-conformance.mjs"], cwd: root, timeoutMs: 25_000 },
-    { name: "webview-render", command: "bun", args: ["run", "scripts/webview-render-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
+    { name: "webview-render", platforms: ["darwin"], command: "bun", args: ["run", "scripts/webview-render-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "window-mode", command: "bun", args: ["run", "scripts/window-mode-conformance.mjs"], cwd: root },
     { name: "pseudo-driver", command: "node", args: ["scripts/pseudo-driver-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
 ];
+
+const skipped = tasks.filter((task) => task.platforms && !task.platforms.includes(process.platform));
+for (const task of skipped) console.log(`TEST_TASK_SKIP ${task.name} platform=${process.platform}`);
+tasks.splice(0, tasks.length, ...tasks.filter((task) => !skipped.includes(task)));
 
 const results = [];
 let next = 0;

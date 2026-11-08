@@ -16,9 +16,6 @@ path = "src/service.rs"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 # real text input/textarea/selection — gpui-component's published crate targets gpui 0.2.2
 gpui-component = "0.5"
-# native WebView content. lb-wry is Longbridge's wry fork that composites correctly
-# as a child of gpui's Metal view (stock wry doesn't).
-wry = { version = "0.53.3", package = "lb-wry", features = ["transparent"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -46,8 +43,18 @@ libc = "0.2"
 [build-dependencies]
 # compiles the JavaScriptCore C ABI shim — see build.rs.
 cc = "1"
+pkg-config = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# probes the Wayland registry for server-side decoration support before the window opens.
+wayland-client = "0.31"
+# reads the XDG settings portal's color scheme before the first JS frame; same build GPUI uses.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# native WebView content. lb-wry is Longbridge's wry fork that composites correctly
+# as a child of gpui's Metal view (stock wry doesn't).
+wry = { version = "0.53.3", package = "lb-wry", features = ["transparent"] }
 block = "0.1"
 cocoa = "0.26"
 core-foundation = "0.10"
@@ -151,6 +158,26 @@ update-mode = "0.2.2-api-compatible-backports"
 #    Deliberately NOT taken: flipping the layer to BGRA8Unorm_sRGB. That is one line and
 #    it fixes the same math, but it changes every quad, shadow and opacity blend in the
 #    app and would invalidate the opacity and occlusion baselines.
+#
+# 8. Linux parity for the blade (Vulkan) backend. src/platform/blade/shaders.wgsl carries the
+#    same primitive changes as the Metal shaders: `ContentMask.corner_radii` on every
+#    primitive (rounded overflow clipping), `transformation` on quads, shadows and polychrome
+#    sprites, the smoke background, and the edge-fade pipeline (`fs_fade`, result =
+#    src_alpha * dst). In-app backdrop blur draws its tint and shape only: blurring would need
+#    the swapchain image to be sampled. The WGSL struct offsets must match the Rust
+#    `repr(C)` layouts exactly; blade only checks total struct sizes.
+#
+# 9. `Window::capture_next_frame` reads the presented frame back from the swapchain (blade
+#    only; the swapchain gets COPY usage when RNGPUI_CAPTURE_PNG, RNGPUI_FRAME_CAPTURE or
+#    RNGPUI_TEST_MODE is set). It replaces CGWindowList capture for the dev CLI on Linux.
+#
+# 10. Wayland `request_decorations` reports client decorations when the compositor has no
+#     xdg-decoration manager. Upstream recorded "server" anyway, so GNOME windows got no
+#     title bar from anyone.
+#
+# 11. Synthetic oblique on Linux (src/platform/linux/text_system.rs), the counterpart of
+#     divergence 5: an italic request on a family with no italic face gets a distinct FontId
+#     whose glyphs rasterize with cosmic-text's FAKE_ITALIC skew.
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2-patched" }
 # Patched gpui-component 0.5.1 (vendored alongside gpui, same precedent). Divergences
@@ -167,7 +194,11 @@ gpui = { path = "vendor/gpui-0.2.2-patched" }
 #    field box's height — text/placeholder sat top-aligned when the field was taller than
 #    h_8. Dropped the conflicting fixed height for single-line so `items_center` centers
 #    the editor within the real field box. See that file's comments.
-# The patch also applies to nothing else (gpui-component is only used for Input here).
+# 4. `set_client_frame_enabled` (src/window_border.rs) lets the host turn off `Root`'s Linux
+#    client-side shadow, border and resize edges. rngpui draws that frame itself (see
+#    src/linux_frame.rs) so the app view is laid out before any chrome node.
+# The patch also applies to nothing else (gpui-component draws Input everywhere, plus the
+# title bar and context menus on Linux).
 gpui-component = { path = "vendor/gpui-component-0.5.1-patched" }
 gpui-component-macros = { path = "vendor/gpui-component-macros-0.5.1-patched" }
 # Patched taffy 0.9.0 (the layout engine gpui solves with; gpui pins `=0.9.0`).
