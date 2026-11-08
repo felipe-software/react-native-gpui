@@ -178,6 +178,14 @@ update-mode = "0.2.2-api-compatible-backports"
 # 11. Synthetic oblique on Linux (src/platform/linux/text_system.rs), the counterpart of
 #     divergence 5: an italic request on a family with no italic face gets a distinct FontId
 #     whose glyphs rasterize with cosmic-text's FAKE_ITALIC skew.
+#
+# 12. Missing font families on Linux (src/platform/linux/text_system.rs `load_family`).
+#     Upstream loads only the exact family name, so macOS families (SF Pro, Menlo) and gpui's
+#     own system font name (IBM Plex Sans) found no faces, and the fallback ignored weight and
+#     width: bold drew as regular and Menlo drew proportional. A family with no faces now
+#     resolves through `fc-match` (macOS sans names ask for `system-ui`, mono names for
+#     `monospace`), so the substitute keeps its weights. `font_id` caches the result per
+#     family, so fc-match runs once per family; without fc-match the old fallback applies.
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2-patched" }
 # Patched gpui-component 0.5.1 (vendored alongside gpui, same precedent). Divergences

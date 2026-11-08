@@ -118,8 +118,7 @@ impl PlatformTextSystem for CosmicTextSystem {
                 .context("requested font family contains no font matching the other parameters")?;
 
         let wants_slant = font.style != FontStyle::Normal;
-        let face_is_upright =
-            candidate_properties[ix].style == font_kit::properties::Style::Normal;
+        let face_is_upright = candidate_properties[ix].style == font_kit::properties::Style::Normal;
         if wants_slant && face_is_upright {
             let upright = candidates[ix];
             return Ok(state.oblique_variant(upright));
@@ -246,9 +245,22 @@ impl CosmicTextSystemState {
         name: &str,
         features: &FontFeatures,
     ) -> Result<SmallVec<[FontId; 4]>> {
-        // TODO: Determine the proper system UI font.
         let name = crate::text_system::font_name_with_fallbacks(name, "IBM Plex Sans");
+        let loaded = self.load_family_faces(name, features)?;
+        if !loaded.is_empty() {
+            return Ok(loaded);
+        }
+        match fontconfig_substitute(name) {
+            Some(substitute) => self.load_family_faces(&substitute, features),
+            None => Ok(loaded),
+        }
+    }
 
+    fn load_family_faces(
+        &mut self,
+        name: &str,
+        features: &FontFeatures,
+    ) -> Result<SmallVec<[FontId; 4]>> {
         let families = self
             .font_system
             .db()
@@ -574,6 +586,25 @@ impl From<FontStyle> for cosmic_text::Style {
             FontStyle::Oblique => cosmic_text::Style::Oblique,
         }
     }
+}
+
+fn fontconfig_substitute(name: &str) -> Option<String> {
+    let pattern = match name {
+        "Menlo" | "Monaco" | "SF Mono" | "SFMono-Regular" | "Lilex" | "IBM Plex Mono" => {
+            "monospace"
+        }
+        "SF Pro Text" | "SF Pro Display" | "SF Pro" | ".AppleSystemUIFont" | "IBM Plex Sans"
+        | "Helvetica Neue" => "system-ui",
+        other => other,
+    };
+    let output = std::process::Command::new("fc-match")
+        .args(["--format", "%{family[0]}", pattern])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let family = String::from_utf8(output.stdout).ok()?;
+    let family = family.trim();
+    (!family.is_empty() && family != name).then(|| family.to_string())
 }
 
 fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties {

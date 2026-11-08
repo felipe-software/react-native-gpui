@@ -48,6 +48,10 @@ The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Way
   --virtual-monitor 1920x1080 &` then `WAYLAND_DISPLAY=rngpui-headless-0 bun run test`.
   Headless Mutter sends no frame callback without damage, so `native-layout` stalls there
   while passing on a real session.
+- Fonts: a family Linux lacks (SF Pro, Menlo, gpui's IBM Plex Sans system font) resolves
+  through `fc-match` to `system-ui` or `monospace` (vendor divergence 12), so bold and
+  monospace text survive. Glyphs still differ from macOS because the faces differ; register the
+  app's own fonts with `RNGPUI_FONT_DIR` when text must match pixel for pixel.
 - Gates that drive macOS-only tools (cua-driver, pbcopy, swift/sips) or WKWebView are marked
   `platforms: ["darwin"]` in scripts/test-suite.mjs and skipped elsewhere.
 - Not on Linux yet: `<WebView>` (wry can only embed into X11 windows), AppKit native controls,
