@@ -1,9 +1,10 @@
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Bounds, Display, Element, ElementId, GlobalElementId, ImageSource,
-    IntoElement, LayoutId, Pixels, Styled, StyledImage, Window, img, px,
+    InteractiveElement, IntoElement, LayoutId, Pixels, Styled, StyledImage, Window, img, px,
 };
 
 use crate::elements::{ReactElement, report_layout};
@@ -41,6 +42,7 @@ impl ReactImageElement {
             .unwrap_or_default();
         let style = &self.element.style;
 
+        let frame_state_id = image_frame_state_id(&src);
         let source: ImageSource = if src.starts_with("http://") || src.starts_with("https://") {
             src.into()
         } else {
@@ -48,6 +50,7 @@ impl ReactImageElement {
         };
 
         let mut el = img(source)
+            .id(frame_state_id)
             .size_full()
             .object_fit(self.element.image_resize_mode().object_fit());
         if let Some(r) = style.border_radius {
@@ -55,6 +58,12 @@ impl ReactImageElement {
         }
         el.into_any_element()
     }
+}
+
+fn image_frame_state_id(src: &str) -> ElementId {
+    let mut hasher = rustc_hash::FxHasher::default();
+    src.hash(&mut hasher);
+    ElementId::NamedInteger("rngpui-image-frames".into(), hasher.finish())
 }
 
 impl Element for ReactImageElement {

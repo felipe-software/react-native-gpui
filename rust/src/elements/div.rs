@@ -165,7 +165,7 @@ pub fn begin_pointer_frame() {
     FRONT_MOST.set(None);
 }
 
-fn open_pointer_span(hitbox: HitboxId, element: u64, pseudo: bool) -> usize {
+pub(crate) fn open_pointer_span(hitbox: HitboxId, element: u64, pseudo: bool) -> usize {
     POINTER_SPANS.with_borrow_mut(|spans| {
         spans.push(PointerSpan {
             hitbox,
@@ -177,7 +177,7 @@ fn open_pointer_span(hitbox: HitboxId, element: u64, pseudo: bool) -> usize {
     })
 }
 
-fn close_pointer_span(index: usize) {
+pub(crate) fn close_pointer_span(index: usize) {
     POINTER_SPANS.with_borrow_mut(|spans| spans[index].end = spans.len());
 }
 
@@ -198,7 +198,7 @@ fn close_pointer_span(index: usize) {
 /// Ancestors stay eligible because the renderer names one id per event and the JS side
 /// does not bubble — `dispatchEvent` looks that single id up in its handler map — so a
 /// parent hears a press on its child only by emitting its own event here.
-fn pointer_reaches(span: Option<usize>, window: &Window) -> bool {
+pub(crate) fn pointer_reaches(span: Option<usize>, window: &Window) -> bool {
     let Some(index) = span else { return false };
     POINTER_SPANS.with_borrow(|spans| {
         let Some(top) = front_most_span(spans, window) else {
@@ -1564,7 +1564,7 @@ fn target_receives_pointer_up_event(
 // plus fade) to the rounded shape, not just the bounding rect. this reaches even an
 // absolutely-positioned child that overflows past a corner, whose own corner is
 // elsewhere. all-zero radii are the shader's fast path (a plain rect mask).
-fn overflow_clip_radii(
+pub(crate) fn overflow_clip_radii(
     bounds: Bounds<Pixels>,
     style: &gpui::Style,
     rem_size: Pixels,

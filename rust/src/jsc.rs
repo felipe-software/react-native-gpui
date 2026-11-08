@@ -579,6 +579,7 @@ pub(crate) fn reload_app() {
         }
     };
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    crate::storage::flush_logged("reload");
     eprintln!("[jsc] reloading app bundle via exec");
     let error = std::process::Command::new(exe).args(args).exec();
     eprintln!("[jsc] reload exec failed: {error}");
@@ -670,19 +671,66 @@ fn do_fetch(req: FetchReq) -> String {
         }
     };
     match resp {
-        Ok(resp) => {
-            let status = resp.status();
-            let body = resp.into_string().unwrap_or_default();
-            json!({"id": req.id, "ok": status < 400, "status": status, "body": body}).to_string()
-        }
-        Err(ureq::Error::Status(code, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
-            json!({"id": req.id, "ok": false, "status": code, "body": body}).to_string()
-        }
+        Ok(resp) | Err(ureq::Error::Status(_, resp)) => fetch_response(req.id, &req.url, resp),
         Err(e) => {
             json!({"id": req.id, "ok": false, "status": 0, "error": e.to_string()}).to_string()
         }
     }
+}
+
+fn response_header_pairs(resp: &ureq::Response) -> Vec<(String, String)> {
+    let mut names = resp.headers_names();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .flat_map(|name| {
+            resp.all(&name)
+                .into_iter()
+                .map(|value| (name.clone(), value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn url_without_fragment(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(mut url) => {
+            url.set_fragment(None);
+            url.to_string()
+        }
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn fetch_response(id: u64, request_url: &str, resp: ureq::Response) -> String {
+    use std::io::Read as _;
+    let status = resp.status();
+    let status_text = resp.status_text().to_string();
+    let final_url = resp.get_url().to_string();
+    let redirected = url_without_fragment(request_url) != url_without_fragment(&final_url);
+    let headers = response_header_pairs(&resp);
+    let mut bytes = Vec::new();
+    if let Err(error) = resp.into_reader().read_to_end(&mut bytes) {
+        return json!({"id": id, "ok": false, "status": 0, "error": format!("reading the response body failed: {error}")}).to_string();
+    }
+    let mut payload = json!({
+        "id": id,
+        "ok": (200..300).contains(&status),
+        "status": status,
+        "statusText": status_text,
+        "url": final_url,
+        "redirected": redirected,
+        "headers": headers,
+    });
+    match String::from_utf8(bytes) {
+        Ok(text) => payload["body"] = json!(text),
+        Err(error) => {
+            payload["bodyBase64"] =
+                json!(base64::engine::general_purpose::STANDARD.encode(error.into_bytes()))
+        }
+    }
+    payload.to_string()
 }
 
 extern "C" fn host_fetch(_ud: *mut c_void, arg: *const c_char) {
@@ -701,6 +749,21 @@ extern "C" fn host_fetch(_ud: *mut c_void, arg: *const c_char) {
 // ── microphone capture (cpal; see audio.rs) ─────────────────────────────────
 extern "C" fn host_audio(_ud: *mut c_void, arg: *const c_char) {
     crate::audio::handle(&arg_str(arg));
+}
+
+extern "C" fn host_storage_write(_ud: *mut c_void, arg: *const c_char) {
+    match crate::storage::StorageOp::parse(&arg_str(arg)) {
+        Ok(op) => crate::storage::apply(op),
+        Err(error) => eprintln!("[storage] {error}"),
+    }
+}
+
+extern "C" fn host_platform_call(_ud: *mut c_void, arg: *const c_char) {
+    crate::platform_services::handle(&arg_str(arg));
+}
+
+extern "C" fn host_random32(_ud: *mut c_void, _arg: *const c_char) -> f64 {
+    crate::platform_services::random_u32() as f64
 }
 
 // ── WebSocket (tungstenite; one worker thread per connection) ────────────────
@@ -1096,17 +1159,24 @@ pub fn start(bundle: Vec<u8>, tree_tx: Sender<Incoming>, tree_json_tx: Sender<St
             install_void(rt, "__rngpui_wsClose", host_ws_close, ud);
             install_void(rt, "__rngpui_pickPaths", host_pick_paths, ud);
             install_void(rt, "__rngpui_uiPost", host_ui_post, ud);
+            install_void(rt, "__rngpui_platformCall", host_platform_call, ud);
             install_num(rt, "__rngpui_now", host_now, ud);
+            install_num(rt, "__rngpui_random32", host_random32, ud);
             install_sv_slots(rt);
+            let storage = crate::storage::init();
+            if storage.path.is_some() {
+                install_void(rt, "__rngpui_storageWrite", host_storage_write, ud);
+            }
             mark("host fns installed");
 
             let env = std::env::vars().collect::<HashMap<String, String>>();
             let env_script = format!(
-                "globalThis.process={{env:{},pid:{},platform:\"{}\"}};globalThis.__rngpuiInitialColorScheme=\"{}\";",
+                "globalThis.process={{env:{},pid:{},platform:\"{}\"}};globalThis.__rngpuiInitialColorScheme=\"{}\";{}",
                 serde_json::to_string(&env).unwrap_or_else(|_| "{}".to_string()),
                 std::process::id(),
                 host_platform(),
-                system_color_scheme()
+                system_color_scheme(),
+                storage.to_js_global()
             );
             if let Err(e) = eval(rt, env_script.as_bytes(), "host-env.js") {
                 eprintln!("[jsc] env eval failed: {e}");
@@ -1182,6 +1252,7 @@ pub fn start_ui(
             install_void(rt, "__rngpui_requestFrame", host_request_frame_ui, ud);
             install_void(rt, "__rngpui_jsPost", host_js_post, ud);
             install_num(rt, "__rngpui_now", host_now, ud);
+            install_num(rt, "__rngpui_random32", host_random32, ud);
             install_sv_slots(rt);
 
             let env = std::env::vars().collect::<HashMap<String, String>>();
@@ -1253,6 +1324,7 @@ fn queue_class(func: &'static str, arg: &str) -> QueueClass {
         || func == "__rngpui_fetchDone"
         || func == "__rngpui_audioDone"
         || func == "__rngpui_audioLevel"
+        || func == "__rngpui_platformDone"
     {
         QueueClass::AsyncCompletion
     } else {
@@ -1745,6 +1817,10 @@ mod tests {
         );
         assert_eq!(
             queue_class("__rngpui_wsEvent", r#"{"id":1,"event":"message"}"#),
+            QueueClass::AsyncCompletion
+        );
+        assert_eq!(
+            queue_class("__rngpui_platformDone", r#"{"id":1,"ok":true}"#),
             QueueClass::AsyncCompletion
         );
     }

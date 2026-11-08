@@ -1,0 +1,15 @@
+{
+    "accounts": {
+        "current": ""
+    },
+    "appearance": {
+        "theme": {
+            "name": "Dark"
+        },
+        "currentFontFamily": "Arimo",
+        "currentFontSize": 11
+    },
+    "streamerMode": {
+        "enabled": 0
+    }
+}

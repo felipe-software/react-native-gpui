@@ -1,0 +1,115 @@
+{
+    "windows": [
+        {
+            "type": "main",
+            "x": 0,
+            "y": 0,
+            "width": 1280,
+            "height": 800,
+            "emotePopup": {
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0
+            },
+            "tabs": [
+                {
+                    "title": "Main",
+                    "selected": true,
+                    "highlightsEnabled": true,
+                    "splits2": {
+                        "type": "horizontal",
+                        "flexh": 1,
+                        "flexv": 1,
+                        "items": [
+                            {
+                                "type": "split",
+                                "moderationMode": false,
+                                "data": {
+                                    "type": "twitch",
+                                    "name": "xqc"
+                                },
+                                "filters": [],
+                                "flexh": 1,
+                                "flexv": 1
+                            },
+                            {
+                                "type": "vertical",
+                                "flexh": 1,
+                                "flexv": 1,
+                                "items": [
+                                    {
+                                        "type": "split",
+                                        "moderationMode": false,
+                                        "data": {
+                                            "type": "twitch",
+                                            "name": "forsen"
+                                        },
+                                        "filters": [],
+                                        "flexh": 1,
+                                        "flexv": 1
+                                    },
+                                    {
+                                        "type": "split",
+                                        "moderationMode": false,
+                                        "data": {
+                                            "type": "twitch",
+                                            "name": "sodapoppin"
+                                        },
+                                        "filters": [],
+                                        "flexh": 1,
+                                        "flexv": 1
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "title": "More",
+                    "highlightsEnabled": true,
+                    "splits2": {
+                        "type": "horizontal",
+                        "flexh": 1,
+                        "flexv": 1,
+                        "items": [
+                            {
+                                "type": "split",
+                                "moderationMode": false,
+                                "data": {
+                                    "type": "twitch",
+                                    "name": "lirik"
+                                },
+                                "filters": [],
+                                "flexh": 1,
+                                "flexv": 1
+                            },
+                            {
+                                "type": "split",
+                                "moderationMode": false,
+                                "data": {
+                                    "type": "twitch",
+                                    "name": "kaicenat"
+                                },
+                                "filters": [],
+                                "flexh": 1,
+                                "flexv": 1
+                            },
+                            {
+                                "type": "split",
+                                "moderationMode": false,
+                                "data": {
+                                    "type": "twitch",
+                                    "name": "hasanabi"
+                                },
+                                "filters": [],
+                                "flexh": 1,
+                                "flexv": 1
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

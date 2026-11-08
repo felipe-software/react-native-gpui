@@ -189,20 +189,45 @@
     g.AbortController = AbortController;
   }
 
-  // fetch — bridged to the Rust host (ureq) on a worker thread; resolves with a minimal
-  // Response (ok/status/text()/json()). Enough for the team-machine REST client.
+  // fetch — bridged to the Rust host (ureq) on a worker thread. The Response carries the
+  // status line, final url, every response header, and the body as text or bytes.
   var fetchSeq = 1;
   var fetchPending = Object.create(null);
+  function collectRequestHeaders(source) {
+    var headers = {};
+    if (!source) return headers;
+    function add(name, value) {
+      name = String(name);
+      value = String(value);
+      var repeated = Object.prototype.hasOwnProperty.call(headers, name);
+      headers[name] = repeated ? headers[name] + ', ' + value : value;
+    }
+    if (Array.isArray(source)) {
+      for (var i = 0; i < source.length; i++) {
+        if (source[i] && source[i].length >= 2) add(source[i][0], source[i][1]);
+      }
+    } else if (typeof source.forEach === 'function') {
+      source.forEach(function (value, name) { add(name, value); });
+    } else {
+      for (var name in source) {
+        if (Object.prototype.hasOwnProperty.call(source, name)) add(name, source[name]);
+      }
+    }
+    return headers;
+  }
+  function hasHeader(headers, wanted) {
+    for (var name in headers) {
+      if (name.toLowerCase() === wanted) return true;
+    }
+    return false;
+  }
   g.fetch = function (url, init) {
     init = init || {};
     var signal = init.signal;
     if (signal && signal.aborted) return Promise.reject(signal.reason || abortError());
     var id = fetchSeq++;
-    var headers = {};
-    if (init.headers) {
-      if (typeof init.headers.forEach === 'function') init.headers.forEach(function (v, k) { headers[k] = v; });
-      else for (var k in init.headers) headers[k] = init.headers[k];
-    }
+    var requestUrl = String(url);
+    var headers = collectRequestHeaders(init.headers);
     return new Promise(function (resolve, reject) {
       var onAbort = function () {
         var p = fetchPending[id];
@@ -210,22 +235,29 @@
         delete fetchPending[id];
         reject((signal && signal.reason) || abortError());
       };
-      fetchPending[id] = { resolve: resolve, reject: reject, signal: signal, onAbort: onAbort };
+      fetchPending[id] = { resolve: resolve, reject: reject, signal: signal, onAbort: onAbort, url: requestUrl };
       if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
-      // binary bodies (Uint8Array/ArrayBuffer) ride bodyBase64 so bytes survive the
-      // string bridge; everything else stringifies as before.
+      // binary bodies (ArrayBuffer and its views) ride bodyBase64 so bytes survive the
+      // string bridge; everything else stringifies.
       var body = null;
       var bodyBase64 = null;
-      if (init.body != null) {
-        if (init.body instanceof Uint8Array || init.body instanceof ArrayBuffer) {
-          bodyBase64 = g.__rngpui_bytesToBase64(init.body);
+      var source = init.body;
+      if (source != null) {
+        if (source instanceof ArrayBuffer) {
+          bodyBase64 = g.__rngpui_bytesToBase64(new Uint8Array(source));
+        } else if (ArrayBuffer.isView(source)) {
+          bodyBase64 = g.__rngpui_bytesToBase64(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
         } else {
-          body = String(init.body);
+          var formBody = typeof g.URLSearchParams === 'function' && source instanceof g.URLSearchParams;
+          if (formBody && !hasHeader(headers, 'content-type')) {
+            headers['Content-Type'] = 'application/x-www-form-urlencoded;charset=UTF-8';
+          }
+          body = String(source);
         }
       }
       g.__rngpui_fetch(JSON.stringify({
         id: id,
-        url: String(url),
+        url: requestUrl,
         method: init.method || 'GET',
         headers: headers,
         body: body,
@@ -249,20 +281,84 @@
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
     return bytes;
   };
+  function makeResponse(r, requestUrl) {
+    var headers = new Headers();
+    var pairs = r.headers || [];
+    for (var i = 0; i < pairs.length; i++) headers.append(pairs[i][0], pairs[i][1]);
+    var binary = r.bodyBase64 != null;
+    var text = null;
+    var bytes = null;
+    if (binary) bytes = g.__rngpui_base64ToBytes(r.bodyBase64);
+    else text = r.body == null ? '' : String(r.body);
+    function bodyText() {
+      if (text === null) text = new g.TextDecoder().decode(bytes);
+      return text;
+    }
+    function bodyBytes() {
+      if (bytes === null) bytes = new g.TextEncoder().encode(text);
+      return bytes;
+    }
+    var response = {
+      ok: !!r.ok,
+      status: r.status | 0,
+      statusText: r.statusText || '',
+      url: r.url || requestUrl,
+      redirected: !!r.redirected,
+      type: 'basic',
+      headers: headers,
+      bodyUsed: false,
+      text: function () {
+        response.bodyUsed = true;
+        return Promise.resolve(bodyText());
+      },
+      json: function () {
+        response.bodyUsed = true;
+        try { return Promise.resolve(JSON.parse(bodyText())); } catch (e) { return Promise.reject(e); }
+      },
+      arrayBuffer: function () {
+        response.bodyUsed = true;
+        var view = bodyBytes();
+        return Promise.resolve(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+      },
+      clone: function () { return makeResponse(r, requestUrl); },
+    };
+    return response;
+  }
   g.__rngpui_fetchDone = function (jsonStr) {
     var r = JSON.parse(jsonStr);
     var p = fetchPending[r.id];
     if (!p) return;
     delete fetchPending[r.id];
     if (p.signal && typeof p.signal.removeEventListener === 'function') p.signal.removeEventListener('abort', p.onAbort);
-    if (r.error != null) { p.reject(new Error(r.error)); return; }
-    var body = r.body || '';
-    p.resolve({
-      ok: r.ok, status: r.status, statusText: '', url: '', redirected: false,
-      text: function () { return Promise.resolve(body); },
-      json: function () { try { return Promise.resolve(JSON.parse(body)); } catch (e) { return Promise.reject(e); } },
-      headers: { get: function () { return null; }, has: function () { return false; } },
+    if (r.error != null) { p.reject(new TypeError(r.error)); return; }
+    p.resolve(makeResponse(r, p.url));
+  };
+
+  var platformSeq = 1;
+  var platformPending = Object.create(null);
+  g.__rngpui_platformRequest = function (op, args) {
+    if (typeof g.__rngpui_platformCall !== 'function') {
+      return Promise.reject(new Error('the native platform host is not available'));
+    }
+    var id = platformSeq++;
+    return new Promise(function (resolve, reject) {
+      platformPending[id] = { resolve: resolve, reject: reject };
+      try {
+        g.__rngpui_platformCall(JSON.stringify({ id: id, op: String(op), args: args == null ? null : args }));
+      } catch (e) {
+        delete platformPending[id];
+        reject(e);
+      }
     });
+  };
+  g.__rngpui_platformDone = function (jsonStr) {
+    var r;
+    try { r = JSON.parse(jsonStr); } catch (e) { return; }
+    var p = platformPending[r.id];
+    if (!p) return;
+    delete platformPending[r.id];
+    if (r.ok) p.resolve(r.value);
+    else p.reject(new Error(r.error || 'platform call failed'));
   };
 
   // mic capture — bridged to the Rust cpal recorder (audio.rs). start/stop/cancel are
@@ -388,20 +484,34 @@
   // ── web globals JavaScriptCore doesn't ship (the app + RN APIs expect them) ─────────
   // Headers (used by the team-machine REST client — `new Headers()` per request).
   function Headers(init) {
-    this._m = {};
+    this._m = Object.create(null);
     if (init) {
       if (init instanceof Headers) { for (var k in init._m) this._m[k] = init._m[k]; }
-      else if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this.set(init[i][0], init[i][1]); }
-      else if (typeof init.forEach === 'function') { var s = this; init.forEach(function (v, k) { s.set(k, v); }); }
+      else if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this.append(init[i][0], init[i][1]); }
+      else if (typeof init.forEach === 'function') { var s = this; init.forEach(function (v, k) { s.append(k, v); }); }
       else { for (var k2 in init) this.set(k2, init[k2]); }
     }
   }
   Headers.prototype.set = function (k, v) { this._m[String(k).toLowerCase()] = String(v); };
   Headers.prototype.get = function (k) { var v = this._m[String(k).toLowerCase()]; return v == null ? null : v; };
   Headers.prototype.has = function (k) { return Object.prototype.hasOwnProperty.call(this._m, String(k).toLowerCase()); };
-  Headers.prototype.append = function (k, v) { var e = this.get(k); this.set(k, e ? e + ', ' + v : v); };
+  Headers.prototype.append = function (k, v) { var e = this.get(k); this.set(k, e != null ? e + ', ' + v : v); };
   Headers.prototype['delete'] = function (k) { delete this._m[String(k).toLowerCase()]; };
-  Headers.prototype.forEach = function (cb, thisArg) { for (var k in this._m) cb.call(thisArg, this._m[k], k, this); };
+  Headers.prototype._names = function () { return Object.keys(this._m).sort(); };
+  Headers.prototype.forEach = function (cb, thisArg) {
+    var names = this._names();
+    for (var i = 0; i < names.length; i++) cb.call(thisArg, this._m[names[i]], names[i], this);
+  };
+  Headers.prototype.entries = function () {
+    var m = this._m;
+    return this._names().map(function (name) { return [name, m[name]]; })[Symbol.iterator]();
+  };
+  Headers.prototype.keys = function () { return this._names()[Symbol.iterator](); };
+  Headers.prototype.values = function () {
+    var m = this._m;
+    return this._names().map(function (name) { return m[name]; })[Symbol.iterator]();
+  };
+  Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
   g.Headers = Headers;
 
   // base64
@@ -458,18 +568,107 @@
     };
   }
 
-  // in-memory localStorage (not persisted across launches; a host-fn-backed store can
-  // replace this later if persistence is needed).
+  // localStorage, persisted through __rngpui_storageWrite (rust/src/storage.rs) when the
+  // host installs it; otherwise in memory.
+  var storageSeed = g.__rngpuiStorage || null;
+  try { delete g.__rngpuiStorage; } catch (e) { g.__rngpuiStorage = undefined; }
+  var storageWrite = typeof g.__rngpui_storageWrite === 'function' ? g.__rngpui_storageWrite : null;
+  var seededPath = storageSeed && storageSeed.path;
+  g.__rngpui_storageInfo = {
+    persistent: !!storageWrite,
+    path: storageWrite && seededPath ? String(seededPath) : null,
+  };
   if (typeof g.localStorage === 'undefined') {
-    var _ls = Object.create(null);
+    var storageEntries = new Map();
+    var seedData = storageSeed && storageSeed.data;
+    if (seedData) {
+      for (var seedKey in seedData) {
+        if (Object.prototype.hasOwnProperty.call(seedData, seedKey)) storageEntries.set(seedKey, String(seedData[seedKey]));
+      }
+    }
+    var storageKeyList = null;
+    function persistStorage(op) {
+      storageKeyList = null;
+      if (storageWrite) storageWrite(JSON.stringify(op));
+    }
     g.localStorage = {
-      getItem: function (k) { return Object.prototype.hasOwnProperty.call(_ls, k) ? _ls[k] : null; },
-      setItem: function (k, v) { _ls[k] = String(v); },
-      removeItem: function (k) { delete _ls[k]; },
-      clear: function () { _ls = Object.create(null); },
-      key: function (i) { return Object.keys(_ls)[i] || null; },
-      get length() { return Object.keys(_ls).length; },
+      getItem: function (k) {
+        k = String(k);
+        return storageEntries.has(k) ? storageEntries.get(k) : null;
+      },
+      setItem: function (k, v) {
+        k = String(k);
+        v = String(v);
+        if (storageEntries.get(k) === v) return;
+        storageEntries.set(k, v);
+        persistStorage(['set', k, v]);
+      },
+      removeItem: function (k) {
+        k = String(k);
+        storageEntries['delete'](k);
+        persistStorage(['remove', k]);
+      },
+      clear: function () {
+        storageEntries.clear();
+        persistStorage(['clear']);
+      },
+      key: function (i) {
+        if (!storageKeyList) storageKeyList = Array.from(storageEntries.keys());
+        var k = storageKeyList[i | 0];
+        return k === undefined ? null : k;
+      },
+      get length() { return storageEntries.size; },
     };
+  }
+
+  var randomWord = typeof g.__rngpui_random32 === 'function' ? g.__rngpui_random32 : null;
+  if (randomWord) {
+    var cryptoApi = g.crypto || {};
+    var INTEGER_ARRAYS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'BigInt64Array', 'BigUint64Array'];
+    var MAX_RANDOM_BYTES = 65536;
+    function namedError(name, message) {
+      var e = new Error(message);
+      e.name = name;
+      return e;
+    }
+    function fillRandom(bytes) {
+      var n = bytes.length;
+      for (var i = 0; i < n; i += 4) {
+        var word = randomWord('') >>> 0;
+        bytes[i] = word & 0xff;
+        if (i + 1 < n) bytes[i + 1] = (word >>> 8) & 0xff;
+        if (i + 2 < n) bytes[i + 2] = (word >>> 16) & 0xff;
+        if (i + 3 < n) bytes[i + 3] = (word >>> 24) & 0xff;
+      }
+    }
+    if (typeof cryptoApi.getRandomValues !== 'function') {
+      cryptoApi.getRandomValues = function (array) {
+        var tag = ArrayBuffer.isView(array) ? Object.prototype.toString.call(array).slice(8, -1) : '';
+        if (INTEGER_ARRAYS.indexOf(tag) < 0) {
+          throw namedError('TypeMismatchError', "Failed to execute 'getRandomValues' on 'Crypto': The provided ArrayBufferView is not an integer array type.");
+        }
+        if (array.byteLength > MAX_RANDOM_BYTES) {
+          throw namedError('QuotaExceededError', "Failed to execute 'getRandomValues' on 'Crypto': The ArrayBufferView's byte length (" + array.byteLength + ') exceeds the number of bytes of entropy available via this API (65536).');
+        }
+        fillRandom(new Uint8Array(array.buffer, array.byteOffset, array.byteLength));
+        return array;
+      };
+    }
+    if (typeof cryptoApi.randomUUID !== 'function') {
+      cryptoApi.randomUUID = function () {
+        var bytes = new Uint8Array(16);
+        fillRandom(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        var out = '';
+        for (var i = 0; i < 16; i++) {
+          out += (bytes[i] + 0x100).toString(16).slice(1);
+          if (i === 3 || i === 5 || i === 7 || i === 9) out += '-';
+        }
+        return out;
+      };
+    }
+    g.crypto = cryptoApi;
   }
 
   if (typeof g.navigator === 'undefined') {

@@ -1,6 +1,7 @@
 // Host → native imperative commands. These don't go through the React commit/tree;
 // the embedded JavaScriptCore runtime hands them to the native service as host calls.
 // Components call `sendCommand`; the render layer wires the sink to the bridge.
+import type { ChatListMessage, ChatListMessagePatch } from "./chat-list-types";
 import type { RendererProvenance, SerializedTerminalFrame } from "./runtime";
 
 export type AppCommandBinding = {
@@ -51,6 +52,9 @@ export type Command =
           sessionId: string;
           frames: SerializedTerminalFrame[];
       }
+    | { $cmd: "chatList"; id: number; op: "append" | "prepend"; messages: ChatListMessage[] }
+    | { $cmd: "chatList"; id: number; op: "update"; patches: ChatListMessagePatch[] }
+    | { $cmd: "chatList"; id: number; op: "clear" | "scrollToBottom" }
     | {
           $cmd: "nativeLayout";
           key: string;

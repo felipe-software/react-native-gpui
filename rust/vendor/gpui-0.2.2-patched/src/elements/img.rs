@@ -251,6 +251,50 @@ struct ImgState {
     frame_index: usize,
     last_frame_time: Option<Instant>,
     started_loading: Option<(Instant, Task<()>)>,
+    next_frame: Option<(Instant, Task<()>)>,
+}
+
+fn frame_delay(data: &RenderImage, frame_index: usize) -> Duration {
+    let delay = Duration::from(data.delay(frame_index));
+    if delay <= Duration::from_millis(10) {
+        Duration::from_millis(100)
+    } else {
+        delay
+    }
+}
+
+fn schedule_next_frame(
+    state: &mut ImgState,
+    data: &RenderImage,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(last_frame_time) = state.last_frame_time else {
+        return;
+    };
+    let due = last_frame_time + frame_delay(data, state.frame_index);
+    let already_scheduled = state
+        .next_frame
+        .as_ref()
+        .is_some_and(|(scheduled, _)| *scheduled == due);
+    if already_scheduled {
+        return;
+    }
+    let current_view = window.current_view();
+    let task = window.spawn(cx, async move |cx| {
+        loop {
+            let now = Instant::now();
+            if now >= due {
+                break;
+            }
+            cx.background_executor().timer(due - now).await;
+        }
+        cx.update(move |_, cx| {
+            cx.notify(current_view);
+        })
+        .ok();
+    });
+    state.next_frame = Some((due, task));
 }
 
 /// The image layout state between frames
@@ -289,6 +333,7 @@ impl Element for Img {
                     frame_index: 0,
                     last_frame_time: None,
                     started_loading: None,
+                    next_frame: None,
                 })
             });
 
@@ -316,8 +361,7 @@ impl Element for Img {
                                     let current_time = Instant::now();
                                     if let Some(last_frame_time) = state.last_frame_time {
                                         let elapsed = current_time - last_frame_time;
-                                        let frame_duration =
-                                            Duration::from(data.delay(state.frame_index));
+                                        let frame_duration = frame_delay(&data, state.frame_index);
 
                                         if elapsed >= frame_duration {
                                             state.frame_index =
@@ -363,8 +407,10 @@ impl Element for Img {
                                 };
                             }
 
-                            if global_id.is_some() && data.frame_count() > 1 {
-                                window.request_animation_frame();
+                            if data.frame_count() > 1
+                                && let Some(state) = &mut state
+                            {
+                                schedule_next_frame(state, &data, window, cx);
                             }
                         }
                         Some(_err) => {

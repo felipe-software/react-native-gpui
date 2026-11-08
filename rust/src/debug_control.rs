@@ -217,6 +217,18 @@ fn incoming_for_request(value: &Value, reply: Sender<Value>) -> Result<Incoming,
         .ok_or("missing $cmd")?;
     match cmd {
         "dump" => Ok(Incoming::DebugDump { reply }),
+        "chatListState" => Ok(Incoming::DebugChatListState {
+            id: value.get("id").and_then(Value::as_u64),
+            reply,
+        }),
+        "clipboard" => Ok(Incoming::DebugClipboard { reply }),
+        "realscroll" => Ok(Incoming::DebugRealScroll {
+            x: number(value, "x")?,
+            y: number(value, "y")?,
+            dx: number(value, "dx").unwrap_or(0.0),
+            dy: number(value, "dy").unwrap_or(0.0),
+            reply,
+        }),
         "terminalPresentation" => Ok(Incoming::DebugTerminalPresentation {
             id: value
                 .get("id")

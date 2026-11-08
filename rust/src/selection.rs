@@ -39,12 +39,23 @@ struct Segment {
 }
 
 thread_local! {
+    static LAST_COPY: RefCell<Option<String>> = const { RefCell::new(None) };
     static DRAG: RefCell<Option<Drag>> = const { RefCell::new(None) };
     /// node global_id -> its currently selected substring (rebuilt each paint).
     static SEGMENTS: RefCell<HashMap<u64, Segment>> = RefCell::new(HashMap::new());
 }
 
+pub fn copy_to_clipboard(text: String, cx: &mut gpui::App) {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+    LAST_COPY.with(|last| *last.borrow_mut() = Some(text));
+}
+
+pub fn last_copy() -> Option<String> {
+    LAST_COPY.with(|last| last.borrow().clone())
+}
+
 pub fn begin_drag(position: Point<Pixels>) {
+    crate::elements::chat_list::clear_selection();
     DRAG.with(|d| {
         *d.borrow_mut() = Some(Drag {
             start: position,
@@ -167,6 +178,11 @@ pub fn set_segment(node: u64, order: (f32, f32), text: String) {
 /// All selected text in visual order. Different rows join with newlines,
 /// side-by-side nodes on the same row with a space.
 pub fn selected_text() -> Option<String> {
+    let native = native_selected_text();
+    native.or_else(crate::elements::chat_list::selected_text)
+}
+
+fn native_selected_text() -> Option<String> {
     SEGMENTS.with(|s| {
         let s = s.borrow();
         if s.is_empty() {

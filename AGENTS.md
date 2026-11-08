@@ -57,6 +57,61 @@ The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Way
 - Not on Linux yet: `<WebView>` (wry can only embed into X11 windows), AppKit native controls,
   system materials, in-app backdrop blur (the tint draws, the blur does not), accessibility.
 
+## Platform services (localStorage, notifications, sound, processes, fetch, crypto)
+
+TS surface: `ts/src/platform-services.ts` (`LocalStorage`, `Notifications`, `Sound`,
+`Processes`, `getRandomValues`, `randomUUID`); the web globals live in
+`rust/src/jsc_preamble.js`. User docs: the "Platform services" section of `ts/README.md`.
+
+- **One async bridge.** `globalThis.__rngpui_platformRequest(op, args)` (preamble) calls the
+  host fn `__rngpui_platformCall({id, op, args})`; `rust/src/platform_services.rs` runs the op
+  on its own thread and answers through `__rngpui_platformDone`, which `jsc::queue_class`
+  files as an async completion. Ops: `notifications.show`, `sound.play`,
+  `processes.findRunning`, `storage.flush`. Add a service by adding an op there, not a new
+  host fn.
+- **localStorage** (`rust/src/storage.rs`). The React runtime gets the parsed file as
+  `globalThis.__rngpuiStorage` in the env script, and every mutation crosses
+  `__rngpui_storageWrite(["set"|"remove"|"clear", ...])` into a per-key pending map. A writer
+  thread commits 250ms after the last change (2s at most) under an `flock` on
+  `local-storage.json.lock`: re-read the file, apply the pending map, write a 0600 temp file,
+  fsync, rename. Re-reading is what lets two processes of one app (`NativeWindow.open()`)
+  keep each other's keys. Commits also run from `atexit` (covers `process.exit`, `cx.quit()`,
+  the orphan watchdog), from a self-pipe thread on SIGTERM/SIGINT/SIGHUP (which then
+  re-raises the signal so exit status is unchanged), before the reload `exec`, and before
+  `OpenWindow` spawns. A file that fails to parse is renamed to
+  `local-storage.json.corrupt-<ms>`, never overwritten. `RNGPUI_TEST_MODE` without
+  `RNGPUI_STORAGE_DIR` keeps it in memory, so no harness launch (the CLI, `run-example`,
+  `conformanceEnv`) can touch a real data dir. The worklet runtime's `localStorage` is
+  always in-memory.
+- **Notifications** use zbus 5's async API under `futures::executor::block_on` (zbus is
+  built without `blocking-api`, the same build ashpd uses), with an 8s timeout. Body text is
+  markup-escaped only when `GetCapabilities` lists `body-markup`. The unit test starts a
+  private `dbus-daemon` with a fake server; never point tests at the session bus. macOS
+  passes title/body as `osascript` arguments (`item n of argv`), so no AppleScript quoting.
+- **Sound** decodes WAV only (no decoder crates in the tree); MP3/Ogg/FLAC reject with a
+  named reason. Playback opens a cpal output stream per sound at the device's default
+  config (resampled and channel-mapped in `render`), at most 8 at once.
+- **Test seams.** `RNGPUI_TEST_MODE` never shows a notification (resolves `false`) or opens
+  an output device. `RNGPUI_FAKE_NOTIFICATIONS=<file>` and `RNGPUI_FAKE_SOUND_DIR=<dir>`
+  record what would have been shown or played.
+- **Processes** match case-insensitively on `/proc/<pid>/comm` and the basename of argv[0].
+  `comm` is cut to 15 bytes, so a longer name also matches a 15-byte comm it starts with.
+- **fetch** returns every response header (repeated ones joined with ", "), `statusText`,
+  the post-redirect `url`, and the body as text, or as base64 when it is not UTF-8. `ok` is
+  2xx only and network failures reject with `TypeError`, as in browsers.
+- **crypto** reads 32 bits per `__rngpui_random32` call from a getrandom-filled pool.
+- **Animated `<Image>`.** GPUI keeps GIF/WebP frame state only for an `img` with an element
+  id, so `rust/src/elements/image.rs` gives the inner img one keyed by a hash of the source.
+  A source change then starts fresh frame state, so a stale frame index cannot outrun a
+  shorter animation. Vendored GPUI divergence 13 (`rust/Cargo.toml`) paces redraws to frame
+  delays: without it a visible GIF repainted at ~400fps under headless Mutter; with it, a
+  150ms-per-frame GIF paints ~7fps and a still image paints nothing while idle.
+
+Gates: `bun run conformance:local-storage`, `conformance:platform-services` (local HTTP server,
+fake sound/notification sinks, a copied `sleep` as the probe process) and
+`conformance:animated-image` (`shot --keep`, `reshot`, `diff`, `get frames`), all in
+`bun run test`.
+
 ## Releasing into Team Machine
 
 `~/team-machine/gui` consumes this package locally, but it is not symlinked. The
@@ -286,3 +341,63 @@ Known gaps (spike follow-ups): native controls aren't in the AX tree because gpu
 / cua-driver can't see them); no gpui-layout measurement of the AppKit intrinsic size, so
 native controls need explicit `style` sizing; Windows/Linux backends are unimplemented (the
 TS API is platform-agnostic; only the per-OS Rust element backend differs).
+
+## Native chat list: `<ChatList>` (2026-11-08)
+
+A virtualized Twitch-style message log drawn entirely by one native element, written for
+`examples/chatterino`. TS: `ts/src/ChatList.tsx` (forwardRef + `ChatListHandle`), contract in
+`ts/src/chat-list-types.ts`, host type `chatlist`. Rust: `rust/src/elements/chat_list/`
+(`model` parsing, `layout` per-message layout, `state` buffer/scroll/selection, `element`
+gpui Element, `images` loading + animation clock, `events`, `debug` dump/tap).
+
+- **Data never rides the React tree.** Props carry only options and colors
+  (`SpecializedElement::ChatList`, paint-only for the retained-layout gate). Messages go
+  through `$cmd: "chatList"` (`append|prepend|update|clear|scrollToBottom`), parsed on the
+  `jsc-tree-parser` thread into structs, then applied on the main thread to a thread-local
+  `ListState` keyed by the `__rngpuiHostId`. An append arms a paint-only frame and lays out
+  only the new message; state is dropped by `TreeMetadata::retain_native_state`.
+- **Scroll position is a message anchor, not a pixel offset**: `(seq, px into that
+  message)`. Appends get increasing seqs and prepends decreasing ones, so the deque stays
+  contiguous and `index = seq - front.seq`. That is why append, prepend and `maxMessages`
+  trimming do not move a scrolled-up view, and why the scrollbar counts messages (Chatterino's
+  thumb math: `y = rel/n·(h−11)+1`, `height = page/n·(h−11)+10`).
+- **Paint inside `window.paint_layer`.** gpui inserts every primitive painted outside a
+  layer into the scene's BoundsTree; `paint_line` avoids that with one layer per line. The
+  first version called `paint_glyph` per glyph with no layer and paint cost 3.3 ms/frame for
+  ~7k glyphs; three layers per list (content, zero-width overlays, selection + scrollbar) cut
+  it to ~1 ms. Inside one layer sprites sort by atlas tile id, not insertion order, which is
+  why zero-width emotes get their own layer.
+- **Never call `div::pointer_reaches` during prepaint.** Spans painted after you are not
+  registered yet, and its per-position memo (`FRONT_MOST`) caches the wrong answer for the
+  rest of the frame, breaking every later element. The chat list records `pointer_inside`
+  from its mouse handlers and reads that in prepaint.
+- **Animation**: images load with `cx.fetch_asset::<ImgResourceLoader>` (shared with
+  `<Image>`), and a load completion arms a paint-only refresh instead of notifying the root.
+  Frame index comes from one global epoch (all copies in sync, delays ≤10 ms play as 100 ms,
+  minimum 20 ms, like Chatterino). Only painted emotes compute a deadline, and
+  `images::request_wake` keeps a single timer for the earliest one, so a visible 200 ms GIF
+  repaints at 5 fps and a list with no visible animation never repaints.
+- **Copy is routed at the root frame, not by focusing the list** (Chatterino hands focus to
+  the input): a capture-phase `Copy` action copies the chat selection unless the focused
+  `TextInput` holds a newer selection (`input_selection_at` vs
+  `chat_list::selection_changed_at`), and a root `on_key_down` handles secondary-c when no
+  input is focused. On Wayland gpui writes the clipboard only while the window has pointer or
+  keyboard focus, so a no-activate headless test window never gets it; the `clipboard` debug
+  command also returns `lastCopy`, the text the app last tried to copy.
+- **Debugging**: `get tree`/`get stats` show one synthetic node per visible message
+  (`chatlist-message`, `nativeID` = message id) with children `chatlist-user|text|link|emote|
+  badge|timestamp|reply-curve` and window-space bounds; ids are negative and stable per
+  visible row. The `chatlist` node carries a `chatList` summary (counts, scroll state,
+  selection, image and wake counters). `do tap` resolves the list with
+  `inspector::tap_target_at` and runs the list's own hit test (`chat_list::debug_tap`), so it
+  agrees with `realtap`. Debug socket commands: `chatListState`, `realscroll` (a real
+  ScrollWheel event), `clipboard`; `scrollAt` routes to a chat list under the point.
+- **Gates**: `bun run conformance:chat-list` (51 checks: wrapping, compact-emote alignment,
+  zero-width overlay pixels, timestamp color, GIF cadence, realtap vs tap, an interactive
+  overlay occluding the list, hover bounds, underline, drag selection + copy,
+  append/prepend/trim anchoring, pause on hover, thumb drag, idle no-repaint). `bun run perf:chat-list [--seconds 10] [--warmup 4]
+  [--max-main-cpu 15] [--json]` (Linux, reads `/proc/<pid>/task`) runs
+  `examples/chat-list-stress.tsx`; tune it with `CHAT_STRESS_LISTS`, `CHAT_STRESS_PREFILL`,
+  `CHAT_STRESS_RATE`, `CHAT_STRESS_ANIMATED_EVERY`, `CHAT_STRESS_ANIMATE=0`. On this machine,
+  headless Mutter, 6 lists × 1000 messages: 20 msg/s with 11 visible GIFs = 7.8% of one core
+  on the main thread at 24 frames/s; GIFs only = 2.0% at 5 frames/s; idle = 0.1 frames/s.

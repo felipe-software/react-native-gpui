@@ -325,8 +325,42 @@ const PROP_TO_EVENT: Record<string, string> = {
     onShowMore: "showMore",
     onLineClick: "lineClick",
     onDrop: "drop",
+    onChatListPress: "chatListPress",
+    onChatListHover: "chatListHover",
+    onChatListScroll: "chatListScroll",
 };
 const EVENT_PROP_PAIRS = Object.entries(PROP_TO_EVENT);
+const CHAT_LIST_EVENTS = new Set(["chatListPress", "chatListHover", "chatListScroll"]);
+const CHAT_LIST_COLOR_PROPS = [
+    "textColor",
+    "mutedColor",
+    "linkColor",
+    "selectionColor",
+    "separatorColor",
+    "alternateBackground",
+    "scrollbarColor",
+] as const;
+const CHAT_LIST_NUMBER_PROPS = ["fontSize", "disabledOpacity", "historicalOpacity", "emoteScale", "maxMessages"] as const;
+const CHAT_LIST_BOOLEAN_PROPS = ["showTimestamps", "animateEmotes", "pauseOnHover"] as const;
+
+function serializeChatListOptions(props: Record<string, unknown>): Record<string, unknown> {
+    const options: Record<string, unknown> = {};
+    for (const key of CHAT_LIST_COLOR_PROPS) {
+        const color = props[key] == null ? undefined : cssColorString(resolveColorValue(props[key]));
+        if (color) options[key] = color;
+    }
+    for (const key of CHAT_LIST_NUMBER_PROPS) {
+        const value = numberProp(props, key);
+        if (value != null) options[key] = value;
+    }
+    for (const key of CHAT_LIST_BOOLEAN_PROPS) {
+        const value = boolProp(props, key);
+        if (value != null) options[key] = value;
+    }
+    const fontFamily = stringProp(props, "fontFamily");
+    if (fontFamily) options.fontFamily = fontFamily;
+    return options;
+}
 type HandlerEntry = { callbacks: Record<string, Function>; eventNames: string[] };
 const handlers = new Map<number, HandlerEntry>();
 const inputEventCounts = new Map<number, number>();
@@ -415,6 +449,7 @@ export function dispatchEvent(
         rows?: number;
         oldLine?: number;
         newLine?: number;
+        chat?: unknown;
     },
 ) {
     if (event === "changeText" && typeof payload.eventCount === "number") {
@@ -457,6 +492,7 @@ export function dispatchEvent(
     }
     else if (event === "terminalViewport")
         result = fn({ cols: payload.cols ?? 0, rows: payload.rows ?? 0 });
+    else if (CHAT_LIST_EVENTS.has(event)) result = fn({ nativeEvent: payload.chat ?? null });
     else result = fn(createEvent(event, payload));
 
     if (result && typeof (result as Promise<unknown>).catch === "function") {
@@ -1278,6 +1314,10 @@ function serialize(inst: Instance | TextInstance, context: PortalContext, inheri
             if (frames.length) node.terminalFrames = frames;
             break;
         }
+        case "ChatList":
+            node.type = "chatlist";
+            node.chatList = serializeChatListOptions(props);
+            break;
         case "Diff": {
             node.type = "diff";
             node.text = typeof props.patch === "string" ? props.patch : "";

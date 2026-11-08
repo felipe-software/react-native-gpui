@@ -93,6 +93,10 @@ pub fn diff_event(
     emit_value(event);
 }
 
+pub fn chat_list_event(id: u64, name: &str, payload: serde_json::Value) {
+    emit_value(json!({ "type": "event", "id": id, "event": name, "chat": payload }));
+}
+
 pub fn renderer_provenance(request_id: u64) {
     emit_value(json!({
         "type": "rendererProvenance",

@@ -60,6 +60,8 @@
         "conformance:inspector": "node scripts/inspector-conformance.mjs",
         "conformance:hit-test": "node scripts/hit-test-conformance.mjs",
         "conformance:occlusion": "node scripts/overlay-occlusion-conformance.mjs",
+        "conformance:chat-list": "node scripts/chat-list-conformance.mjs",
+        "perf:chat-list": "node scripts/chat-list-stress.mjs",
         "conformance:input": "node scripts/input-conformance-driver.mjs",
         "conformance:input-runtime": "bun run scripts/input-runtime-conformance.ts",
         "probe:input-latency": "bun run scripts/input-latency-probe.ts",
@@ -89,6 +91,9 @@
         "conformance:hot-reload": "node scripts/hot-reload-conformance.mjs",
         "conformance:hot-reload-cli": "node scripts/hot-reload-cli-conformance.mjs",
         "conformance:startup": "node scripts/startup-conformance.mjs",
+        "conformance:local-storage": "node scripts/local-storage-conformance.mjs",
+        "conformance:platform-services": "node scripts/platform-services-conformance.mjs",
+        "conformance:animated-image": "node scripts/animated-image-conformance.mjs",
         "prepublishOnly": "npm run build",
         "release": "bun scripts/release.ts"
     },
