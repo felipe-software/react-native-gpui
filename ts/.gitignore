@@ -7,3 +7,6 @@ node_modules/
 .reanimated-prebuilt/
 # reload-conformance mkdtemp workdirs (removed in its finally; left behind by a hard kill)
 .rngpui-reload-*/
+
+# npm platform packages and local packs (scripts/npm-packages.mjs)
+npm/

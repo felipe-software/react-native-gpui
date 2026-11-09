@@ -5,7 +5,7 @@ Write **React Native** components — render them **natively** with [GPUI](https
 It also supports the **"native shell, web content"** hybrid: embed a native `WebView` (WKWebView via `wry`) anywhere in the tree for web-grade content with native scroll + selection, while the rest of the UI stays native GPUI.
 
 ```tsx
-import { AppRegistry, View, Text, Pressable, StyleSheet } from "react-native-gpui";
+import { AppRegistry, View, Text, Pressable, StyleSheet } from "@felipe-software/react-native-gpui";
 import { useState } from "react";
 
 function App() {
@@ -31,9 +31,76 @@ AppRegistry.runApplication("App");
 ```
 
 ```sh
-bun run scripts/bundle-app.mjs app.tsx /tmp/app.js
-RNGPUI_BUNDLE=/tmp/app.js native/rngpui-service
+bun add @felipe-software/react-native-gpui react
+bun run rngpui run app.tsx
 ```
+
+## Install
+
+```sh
+bun add @felipe-software/react-native-gpui react
+```
+
+The package brings its own renderer: npm, Bun, pnpm and Yarn install the one platform
+package that matches your machine from its `optionalDependencies`, so do not install with
+`--omit=optional` / `--no-optional`. Your app's own `react` (19 or newer) is the only React in
+the bundle; the library declares it as a peer dependency.
+
+| Platform | Package | Built on |
+| --- | --- | --- |
+| Linux x86_64 | `@felipe-software/react-native-gpui-linux-x64` | Ubuntu 24.04 (glibc 2.39 or newer) |
+| Linux arm64 | `@felipe-software/react-native-gpui-linux-arm64` | Ubuntu 24.04 (glibc 2.39 or newer) |
+| macOS Apple silicon | `@felipe-software/react-native-gpui-darwin-arm64` | macOS 14 |
+
+Each platform package holds `rngpui-service`, `libghostty-vt` and `ui-runtime.js`; there is no
+Intel macOS build. The CLI and the bundler run on [Bun](https://bun.sh) 1.3 or newer.
+
+**Linux runtime.** The service loads WebKitGTK's JavaScriptCore at startup
+(`libjavascriptcoregtk-4.1`, `-6.0` or `-4.0`, whichever is installed) and needs a Vulkan
+driver, `libwayland-client` (Wayland), `libxkbcommon-x11` (X11) and ALSA. GNOME desktops
+already ship them; elsewhere:
+
+```sh
+# Debian 13 / Ubuntu 24.04
+sudo apt install libjavascriptcoregtk-4.1-0 libvulkan1 mesa-vulkan-drivers libxkbcommon-x11-0 libasound2t64
+# Fedora
+sudo dnf install javascriptcoregtk4.1 vulkan-loader mesa-vulkan-drivers libxkbcommon-x11 alsa-lib
+```
+
+## Bundle and run
+
+An app is one entry file. Bun bundles it into a single script and `rngpui-service` runs that
+script in JavaScriptCore:
+
+```sh
+rngpui run app.tsx                          # bundle (production) and open the window
+rngpui run app.tsx --dev --size 1280x800    # development React, window size
+rngpui bundle app.tsx dist/app.js           # just write the bundle (add --dev for development)
+rngpui run --bundle dist/app.js             # run a bundle you built earlier
+rngpui dev --launch app.tsx --root src      # Fast Refresh while you edit
+```
+
+Run them with `bun run rngpui …` or from a `package.json` script, which only use the copy in
+your `node_modules`. The bundler
+resolves packages from the entry's directory upward, so it uses your app's `node_modules`, and
+both `@felipe-software/react-native-gpui` and `react-native` resolve to the same renderer.
+Imports of the old unscoped name `react-native-gpui` bundle too; for TypeScript, map it with
+`"paths": { "react-native-gpui": ["./node_modules/@felipe-software/react-native-gpui"] }` or
+install the package under that name (`bun add react-native-gpui@npm:@felipe-software/react-native-gpui`).
+
+`rngpui run` finds the renderer the same way every launcher here does: `RNGPUI_SERVICE` if set,
+otherwise the installed platform package. A custom launcher can ask for the same path:
+
+```js
+import { resolveServiceBinary } from "@felipe-software/react-native-gpui/scripts/service-binary.mjs";
+
+const { path } = resolveServiceBinary(); // spawn it with RNGPUI_BUNDLE=<your bundle>
+```
+
+`react-native-reanimated` runs from a copy prebuilt into the package, so do not install
+reanimated yourself. Worklets in your own code (`useAnimatedStyle`, `withSpring`, …) need the
+worklets Babel transform at bundle time:
+`bun add -d @babel/core @babel/plugin-syntax-jsx @babel/preset-typescript react-native-worklets@0.8.1`.
 
 ## How it works
 
@@ -466,9 +533,10 @@ recently used files once it passes 256 MB.
 
 ## Building from source
 
-This package ships a prebuilt `rngpui-service` binary in `native/`, built for the
-platform that ran `npm run build`. To build it yourself you need a Rust toolchain and
-Zig for the terminal element. macOS supplies the JavaScriptCore framework; on Linux,
+Releases ship `rngpui-service` in the platform packages above. In a checkout, `npm run build`
+writes it to `native/` instead, and every launcher uses the newer of `native/rngpui-service`
+and `../rust/target/release/rngpui-service`, so a plain `cargo build` is picked up too. To
+build it yourself you need a Rust toolchain and Zig for the terminal element. macOS supplies the JavaScriptCore framework; on Linux,
 install a C/C++ toolchain and WebKitGTK's JavaScriptCore headers:
 
 ```sh
@@ -489,7 +557,58 @@ npm run typecheck
 Point the runtime at a specific binary with `RNGPUI_SERVICE=/path/to/rngpui-service`.
 Set `RNGPUI_INSPECTOR=1` to force-enable the native inspector for any app.
 
+`npm run npm:pack -- --out /tmp/packs` builds the two tarballs a release would publish for
+this machine (the main package and its platform package) so you can install them into a test
+project: `bun add react /tmp/packs/felipe-software-react-native-gpui-<version>.tgz
+/tmp/packs/felipe-software-react-native-gpui-<platform>-<version>.tgz`. Until that version is
+on npm, the install warns that the other platform packages are missing (404); that is
+expected.
+
+## Releasing
+
+Releases are automated, the same way as
+[react-native-back-gesture](https://github.com/felipe-software/react-native-back-gesture):
+
+1. Merge a pull request with [conventional commits](https://www.conventionalcommits.org/)
+   into `main`. `release-main.yaml` runs semantic-release, which turns `feat`, `fix`, `perf`,
+   `refactor` and `revert` commits into the next patch version and pushes a `v<version>` tag
+   and a GitHub release.
+2. The tag starts `publish-npm.yml`. It builds `rngpui-service` on Linux x64, Linux arm64 and
+   macOS arm64 (ad-hoc signed with the JIT entitlement), strips its debug info, packs the
+   three platform packages and the main package at the tag's version, then publishes the
+   platform packages first and the main package last, with npm provenance. Versions already
+   on npm are skipped, so a failed run can simply be re-run, or started by hand with
+   **Run workflow** and the tag.
+3. `test.yaml` checks pull requests: typecheck, the unit tests, and `cargo test` on Linux.
+
+The version in `package.json` is not the release version: CI sets it, and the
+`optionalDependencies` on the platform packages, from the tag.
+
+**One-time setup** (maintainers):
+
+1. **Baseline tag.** Before the first merge to `main` with these workflows, tag upstream's 0.1.39
+   release commit so semantic-release continues from there (the next release is 0.1.40):
+   `git tag v0.1.39 89ac9d6 && git push origin v0.1.39`. Without a `v*` tag the version
+   bump job stops instead of starting over at 1.0.0.
+2. **npm organization** `felipe-software`, with your npm account as an owner.
+3. **GitHub environment** `npm` in this repository (Settings → Environments), holding:
+   - `SEMANTIC_RELEASE_GH_TOKEN`: a fine-grained personal access token for this repository with
+     *Contents: read and write*. It pushes the release tag and creates the GitHub release; a
+     tag pushed with the default `GITHUB_TOKEN` would not start `publish-npm.yml`.
+   - `NPM_TOKEN`, for the first release only: an npm granular access token with read and write
+     access to the `@felipe-software` scope. npm can only attach a trusted publisher to a
+     package that already exists, so the first publish of each package uses this token.
+4. **Trusted publishers.** After the first release, open each of the four packages on
+   npmjs.com (`@felipe-software/react-native-gpui` and its `-linux-x64`, `-linux-arm64` and
+   `-darwin-arm64` packages) → Settings → Trusted publishing → GitHub Actions, with owner
+   `felipe-software`, repository `react-native-gpui`, workflow `publish-npm.yml` and
+   environment `npm`. Then delete the `NPM_TOKEN` secret. npm drops trusted publisher
+   settings that are never used, so set them up shortly before the next release.
+
 ## Examples
+
+[chatterino-gpui](https://github.com/felipe-software/chatterino-gpui) is a full app built on
+the npm package: a Chatterino-style Twitch chat client. The fixtures below run from a checkout:
 
 ```sh
 bun run kitchen                      # the full component surface + self-validating layout
@@ -518,6 +637,8 @@ bun run pixel-diff before.png after.png --crop 0,0,540,300 --diff-out /tmp/rngpu
 ## Status & platform
 
 macOS (Metal) is the reference target. GPUI builds here with the `runtime_shaders` feature.
+Prebuilt renderers exist for Linux x86_64, Linux arm64 and macOS on Apple silicon (see
+[Install](#install)).
 
 Linux runs on GPUI's Vulkan renderer under Wayland or X11, picked automatically: Wayland
 when `WAYLAND_DISPLAY` answers, otherwise X11. It needs a Vulkan driver (Mesa or the

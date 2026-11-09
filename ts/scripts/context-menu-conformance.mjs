@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import net from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveServiceBinary } from "./service-binary.mjs";
 
 const tsRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = resolve(tsRoot, "..");
 const outDir = process.argv[2] || "/tmp/rngpui-context-menu-conformance";
 
 rmSync(outDir, { recursive: true, force: true });
@@ -25,10 +25,7 @@ if (bundle.status !== 0) {
     fail("bundle failed");
 }
 
-const serviceBin = resolve(
-    process.env.RNGPUI_SERVICE || resolve(repoRoot, "rust", "target", "release", "rngpui-service"),
-);
-if (!existsSync(serviceBin)) fail(`rngpui-service not found: ${serviceBin} (build it or set RNGPUI_SERVICE)`);
+const serviceBin = resolveServiceBinary().path;
 
 let output = "";
 const child = spawn(serviceBin, [], {

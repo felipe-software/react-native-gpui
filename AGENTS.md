@@ -16,6 +16,13 @@ bun run scripts/bundle-app.mjs examples/kitchen-sink.tsx /tmp/kitchen.js
 RNGPUI_BUNDLE=/tmp/kitchen.js RNGPUI_NO_ACTIVATE=1 ../rust/target/release/rngpui-service
 ```
 
+- Every launcher finds the binary through `ts/scripts/service-binary.mjs`
+  (`resolveServiceBinary()`): `RNGPUI_SERVICE`, then the installed platform package
+  (`@felipe-software/react-native-gpui-<os>-<cpu>`), then, in a repo checkout, the newer of
+  `ts/native/rngpui-service` (`npm run build:native`) and `rust/target/release/rngpui-service`
+  (`cargo build`), then `rust/target/debug`. Add new launchers through it, never a hardcoded
+  path: a stale `ts/native` binary once rendered `nativebutton` as an empty div.
+
 ## Linux
 
 The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Wayland or X11.
@@ -153,8 +160,8 @@ fake sound/notification sinks, a copied `sleep` as the probe process),
   nothing stored); `reload` stores; `force-cache` returns any stored copy, else fetches and
   stores; `only-if-cached` returns the stored copy or a 504 without the network; `no-cache`
   sends a conditional request and returns the stored body on 304. Stale-while-revalidate is two
-  requests started together, `only-if-cached` and `reload` (examples/chatterino
-  `requestCachedJson`).
+  requests started together, `only-if-cached` and `reload` (`requestCachedJson` in
+  [chatterino-gpui](https://github.com/felipe-software/chatterino-gpui)).
 - **`ImageCache.prefetch(urls)`** (`rust/src/image_prefetch.rs`) calls
   `cx.fetch_asset::<ImgResourceLoader>` on the main thread, so the first paint finds the image
   downloaded and decoded; the promise resolves through a `{"type":"imagePrefetch"}` bridge event.
@@ -167,10 +174,11 @@ fake sound/notification sinks, a copied `sleep` as the probe process),
   revalidate, status, startMs, endMs, bytes}` per image request. `chatListState` takes
   `images: true` (per-list `visibleImages` with state, `visibleIds`, and `visibleHistorical`) and
   `timings: true` (`imageTimings`: requested, settled and first-painted wall-clock ms per URL).
-- **Timing harness**: `bun examples/chatterino/scripts/emote-timing.mjs` times cold and warm
-  launches of examples/chatterino and of the Flatpak Chatterino 2.5.5 (Xvfb `:98`, logs via
+- **Timing harness**: `scripts/emote-timing.mjs` in
+  [chatterino-gpui](https://github.com/felipe-software/chatterino-gpui) times cold and warm
+  launches of that app and of the Flatpak Chatterino 2.5.5 (Xvfb `:98`, logs via
   `QT_LOGGING_RULES`, `xwd` frames). It replays a recorded history to both apps and can drop live
-  chat through a local IRC proxy; see examples/chatterino/README.md.
+  chat through a local IRC proxy; see its README.
 
 Gate: `bun run conformance:http-cache` (two launches sharing one `RNGPUI_CACHE_DIR` against a
 local server that counts hits: cache modes, 304 revalidation, images downloaded once across
@@ -276,6 +284,52 @@ That script:
 
 Use `bun run sync:gpui` in `~/team-machine/gui` only for quick local iteration. It
 refreshes the copied package but does not create a version-history marker.
+
+The package is named `@felipe-software/react-native-gpui` since the npm release flow
+landed; the copy still lives at `node_modules/react-native-gpui`, and module resolution
+goes by directory, so Team Machine imports are unchanged. The `version` fields stay plain
+versions that the script bumps in place. The checked-in `ts/package.json` has no
+`optionalDependencies`: npm releases add them at publish time (next section), so
+`bun install` here and in Team Machine never fetches platform packages.
+
+## Releasing to npm
+
+`@felipe-software/react-native-gpui` and its platform packages
+(`@felipe-software/react-native-gpui-linux-x64`, `-linux-arm64`, `-darwin-arm64`, each
+`rngpui-service` + libghostty-vt + `ui-runtime.js`) are released from CI, the same way as
+`felipe-software/react-native-back-gesture`. Never `npm publish` from a laptop.
+
+1. A merge to `main` runs `.github/workflows/release-main.yaml` →
+   `version-bump.yaml`: semantic-release (`.releaserc.json`, root `package.json`) reads the
+   conventional commits since the last `v*` tag (`feat`, `fix`, `perf`, `refactor`,
+   `revert` → patch) and pushes the next `v<version>` tag plus a GitHub release. It
+   refuses to run while no `v*` tag exists (it would start at 1.0.0); the baseline is
+   `v0.1.39` on 89ac9d6, upstream's 0.1.39 release commit.
+2. The tag runs `publish-npm.yml`: a native matrix (ubuntu-24.04, ubuntu-24.04-arm,
+   macos-14) builds `rngpui-service` with `.github/actions/native-toolchain`, and
+   `scripts/npm-packages.mjs stage-platform` strips debug info (macOS re-signs with
+   `rust/jsc.entitlements`) and writes the platform package. A second job builds `dist/`
+   and runs `npm-packages.mjs set-version <tag version>`, which also writes the exact-version
+   `optionalDependencies`. The publish job (environment `npm`, OIDC trusted publishing)
+   publishes the platform packages first, then the main package, skipping versions npm
+   already has, so a rerun is safe.
+3. `npm run npm:pack -- --out <dir>` (`npm-packages.mjs pack`) builds the same two
+   tarballs for this machine's platform locally, for install tests.
+
+npm attaches a trusted publisher only to a package that already exists, so the first release
+of each package publishes with the `NPM_TOKEN` secret of the `npm` environment; the one-time
+setup list is in `ts/README.md` ("Releasing").
+
+Outside this repo the published package bundles and runs apps itself: `rngpui bundle
+<entry> <out.js>`, `rngpui run <entry>` (cli/bundle.ts, cli/run.ts). `bundle-app.mjs` resolves
+packages from the entry's directory upward, aliases `react-native`, `react-native-gpui` and
+`@felipe-software/react-native-gpui` to one library entry (`src/index.ts` in a checkout,
+`dist/index.js`, or `dist/index.development.js` for development bundles, whose reconciler must
+be the development build React's dev runtime expects), skips the worklets Babel pass for the
+package's own `dist/`, and only rebuilds `ui-runtime.js` in a checkout.
+
+`.github/workflows/test.yaml` runs on pull requests: typecheck, `npm run test:unit`, and
+`cargo test` on Linux.
 
 ## Developer CLI: `rngpui` (inspect + drive a GPUI app)
 
@@ -484,8 +538,8 @@ TS API is platform-agnostic; only the per-OS Rust element backend differs).
 ## Native chat list: `<ChatList>` (2026-11-08)
 
 A virtualized Twitch-style message log drawn entirely by one native element, written for
-`examples/chatterino`. TS: `ts/src/ChatList.tsx` (forwardRef + `ChatListHandle`), contract in
-`ts/src/chat-list-types.ts`, host type `chatlist`. Rust: `rust/src/elements/chat_list/`
+[chatterino-gpui](https://github.com/felipe-software/chatterino-gpui). TS: `ts/src/ChatList.tsx`
+(forwardRef + `ChatListHandle`), contract in `ts/src/chat-list-types.ts`, host type `chatlist`. Rust: `rust/src/elements/chat_list/`
 (`model` parsing, `layout` per-message layout, `state` buffer/scroll/selection, `element`
 gpui Element, `images` loading + animation clock, `events`, `debug` dump/tap).
 

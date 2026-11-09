@@ -4,9 +4,6 @@ import { launchHost } from "../cli/host.ts";
 import { frontmostProcess, sleep } from "./conformance-utils.mjs";
 
 const SCROLL_STEPS = 100;
-const service = new URL("../../rust/target/release/rngpui-service", import.meta.url).pathname;
-const previousService = process.env.RNGPUI_SERVICE;
-process.env.RNGPUI_SERVICE = service;
 process.env.RNGPUI_DRAW_PROBE = "1";
 process.env.RNGPUI_SCROLL_LATENCY_PROBE = "1";
 
@@ -23,7 +20,6 @@ const percentile = (values, fraction) => {
 const frontmostBefore = frontmostProcess();
 let host;
 try {
-    if (!existsSync(service)) throw new Error(`rngpui-service not found: ${service}`);
     host = await launchHost(
         new URL("../examples/native-scroll-react-stall-conformance.tsx", import.meta.url).pathname,
         { size: "480x620" },
@@ -91,8 +87,6 @@ try {
     process.exitCode = 1;
 } finally {
     host?.close();
-    if (previousService === undefined) delete process.env.RNGPUI_SERVICE;
-    else process.env.RNGPUI_SERVICE = previousService;
 }
 
 async function waitForLog(path, needle, timeoutMs) {

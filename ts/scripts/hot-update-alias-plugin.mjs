@@ -43,7 +43,7 @@ export function rngpuiHotUpdateAliasPlugin() {
       build.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: 'rngpui-hot:react/jsx-runtime', namespace: 'rngpui-hot' }))
       build.onResolve({ filter: /^react\/jsx-dev-runtime$/ }, () => ({ path: 'rngpui-hot:react/jsx-dev-runtime', namespace: 'rngpui-hot' }))
       build.onResolve({ filter: /^react\/compiler-runtime$/ }, () => ({ path: 'rngpui-hot:react/compiler-runtime', namespace: 'rngpui-hot' }))
-      build.onResolve({ filter: /^react-native-gpui$/ }, () => ({ path: 'rngpui-hot:react-native-gpui', namespace: 'rngpui-hot' }))
+      build.onResolve({ filter: /^(?:@felipe-software\/)?react-native-gpui$/ }, () => ({ path: 'rngpui-hot:react-native-gpui', namespace: 'rngpui-hot' }))
       build.onResolve({ filter: /^react-native$/ }, () => ({ path: 'rngpui-hot:react-native', namespace: 'rngpui-hot' }))
       // Repository examples import the source entry directly. A hot bundle must
       // still reuse the renderer already installed by the initial bundle.

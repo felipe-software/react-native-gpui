@@ -1,0 +1,43 @@
+name: Native toolchain
+description: Rust, Zig 0.15.2, the Linux build packages and the pinned Ghostty source for rngpui-service.
+
+inputs:
+    cache-key:
+        description: Extra key that separates this job's Cargo cache
+        required: true
+
+runs:
+    using: composite
+    steps:
+        - name: Install Linux build packages
+          if: runner.os == 'Linux'
+          shell: bash
+          run: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends \
+                libjavascriptcoregtk-4.1-dev libxkbcommon-x11-dev libasound2-dev \
+                libfontconfig-dev libfreetype-dev pkg-config
+
+        - name: Setup Rust
+          uses: dtolnay/rust-toolchain@stable
+
+        - name: Setup Zig
+          uses: mlugg/setup-zig@v2
+          with:
+              version: 0.15.2
+
+        - name: Cache Cargo
+          uses: Swatinem/rust-cache@v2
+          with:
+              workspaces: rust -> target
+              key: ${{ inputs.cache-key }}
+
+        - name: Cache the Ghostty source
+          uses: actions/cache@v4
+          with:
+              path: ~/.cache/rngpui
+              key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/Cargo.lock') }}
+
+        - name: Check out the pinned Ghostty source
+          shell: bash
+          run: echo "GHOSTTY_SOURCE_DIR=$(node ts/scripts/ghostty-source.mjs)" >> "$GITHUB_ENV"

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveServiceBinary } from "./service-binary.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsRoot = resolve(here, "..");
-const repoRoot = resolve(tsRoot, "..");
 const workdir = mkdtempSync(join(tsRoot, ".rngpui-reload-"));
 const entry = join(workdir, "app.tsx");
 const outJs = join(workdir, "app.js");
@@ -16,7 +16,7 @@ let child = null;
 
 try {
     bundle("rngpui reload first", true);
-    child = spawn(serviceBinary(), [], {
+    child = spawn(resolveServiceBinary().path, [], {
         cwd: tsRoot,
         env: {
             ...process.env,
@@ -101,39 +101,6 @@ async function waitForDump(text, output) {
 
 function sleep(ms) {
     return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-}
-
-function serviceBinary() {
-    const explicit = process.env.RNGPUI_SERVICE ? resolve(process.env.RNGPUI_SERVICE) : "";
-    const native = resolve(tsRoot, "native/rngpui-service");
-    const release = resolve(repoRoot, "rust/target/release/rngpui-service");
-    const binary = [explicit, native, release].filter(Boolean).find(existsSync);
-    if (!binary) throw new Error(`rngpui-service not found at ${native} or ${release}`);
-    stageServiceDylibs(binary);
-    return binary;
-}
-
-function stageServiceDylibs(binary) {
-    const releaseDir = dirname(binary);
-    for (const dylib of findDylibs(resolve(releaseDir, "build"), "libghostty-vt")) {
-        const destination = join(releaseDir, dylib.split("/").pop());
-        if (!existsSync(destination)) copyFileSync(dylib, destination);
-    }
-}
-
-function findDylibs(dir, prefix) {
-    if (!existsSync(dir)) return [];
-    const out = [];
-    const stack = [dir];
-    while (stack.length) {
-        const current = stack.pop();
-        for (const entry of readdirSafe(current)) {
-            const full = join(current, entry.name);
-            if (entry.isDirectory()) stack.push(full);
-            else if (entry.name.startsWith(prefix) && entry.name.endsWith(".dylib")) out.push(full);
-        }
-    }
-    return out;
 }
 
 function readdirSafe(dir) {

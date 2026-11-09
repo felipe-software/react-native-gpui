@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-import { isServiceLibrary } from "./native-libs.mjs";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveServiceBinary } from "./service-binary.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsRoot = resolve(here, "..");
-const repoRoot = resolve(tsRoot, "..");
 
 const args = process.argv.slice(2);
 const positional = [];
@@ -61,7 +60,7 @@ try {
         process.exit(bundle.status || 1);
     }
     const bundlePath = outJs;
-    const bin = serviceBinary();
+    const bin = resolveServiceBinary().path;
     child = spawn(bin, [], {
         cwd: tsRoot,
         env: {
@@ -101,39 +100,4 @@ try {
     cleanup();
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
-}
-
-function serviceBinary() {
-    const binary = resolve(process.env.RNGPUI_SERVICE || resolve(repoRoot, "rust", "target", "release", "rngpui-service"));
-    if (!existsSync(binary)) throw new Error(`rngpui-service not found: ${binary}`);
-    stageServiceDylibs(binary);
-    return binary;
-}
-
-function stageServiceDylibs(binary) {
-    const releaseDir = dirname(binary);
-    const ghostty = findDylibs(resolve(releaseDir, "build"), "libghostty-vt");
-    const stagedGhostty = findDylibs(releaseDir, "libghostty-vt");
-    if (!ghostty.length && !stagedGhostty.length) {
-        throw new Error(`libghostty-vt library not found under ${resolve(releaseDir, "build")} or ${releaseDir}`);
-    }
-    for (const dylib of ghostty) {
-        const destination = join(releaseDir, dylib.split("/").pop());
-        if (!existsSync(destination)) copyFileSync(dylib, destination);
-    }
-}
-
-function findDylibs(dir, prefix) {
-    if (!existsSync(dir)) return [];
-    const out = [];
-    const stack = [dir];
-    while (stack.length) {
-        const current = stack.pop();
-        for (const entry of readdirSync(current, { withFileTypes: true })) {
-            const path = join(current, entry.name);
-            if (entry.isDirectory()) stack.push(path);
-            else if (isServiceLibrary(entry.name, prefix)) out.push(path);
-        }
-    }
-    return out;
 }

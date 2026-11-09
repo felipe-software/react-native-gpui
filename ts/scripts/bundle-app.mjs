@@ -5,21 +5,25 @@
 //   bun scripts/bundle-app.mjs [entry] [out.js]
 //
 // Bun is used only as the dev bundler here; the output runs under JavaScriptCore.
-import { resolve, sep } from 'node:path'
+import { dirname, resolve, sep } from 'node:path'
+import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { reanimatedBunPlugin } from './reanimated-bun-plugin.mjs'
 import { rngpuiHotUpdateAliasPlugin } from './hot-update-alias-plugin.mjs'
 import { createReactRefreshSwcTransform } from './react-refresh-swc.mjs'
 import { nativePackageExportsPlugin } from './native-package-exports-plugin.mjs'
+import { isRepoCheckout } from './service-binary.mjs'
 
-const root = resolve(import.meta.dirname, '..') // ts/
+const root = resolve(import.meta.dirname, '..')
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'))
 const entry = args[0] ? resolve(args[0]) : resolve(root, 'examples/engine-smoke.tsx')
 const outJs = args[1] ? resolve(args[1]) : '/tmp/rngpui-bundle.js'
+const projectRoot = resolve(process.env.RNGPUI_PROJECT_ROOT || dirname(entry))
 const mode = process.env.NODE_ENV || 'development'
 const hotUpdate = process.env.RNGPUI_HOT_UPDATE === '1'
 const refreshBootstrap = resolve(root, 'src/refresh.ts')
 const refreshTransform = mode === 'development' ? createRefreshTransform() : null
+const libraryEntry = libraryEntryFor(mode)
 
 const result = await Bun.build({
   entrypoints: [entry],
@@ -36,8 +40,8 @@ const result = await Bun.build({
   },
   plugins: [
     ...(hotUpdate ? [rngpuiHotUpdateAliasPlugin()] : []),
-    reanimatedBunPlugin({ rngTsRoot: root, transformSource: refreshTransform }),
-    nativePackageExportsPlugin({ root, name: 'rngpui native package exports' }),
+    reanimatedBunPlugin({ rngTsRoot: root, resolveRoot: projectRoot, libraryEntry, transformSource: refreshTransform }),
+    nativePackageExportsPlugin({ root: projectRoot, name: 'rngpui native package exports' }),
   ],
   sourcemap: 'none',
   throw: false,
@@ -55,13 +59,21 @@ console.log(`[bundle-app] ${entry}`)
 console.log(`[bundle-app] wrote ${outJs} (${(code.length / 1024).toFixed(0)} KB, NODE_ENV=${mode})`)
 
 // every app bundle needs the worklet/UI runtime bundle staged next to the service
-// binary. mtime-cached, so usually a no-op.
-if (!hotUpdate && !entry.endsWith('/reanimated/ui-entry.ts')) {
-  const ui = spawnSync('bun', ['scripts/build-ui-runtime.mjs'], { cwd: root, stdio: 'inherit' })
+// binary. mtime-cached, so usually a no-op. Installed packages ship it prebuilt.
+if (isRepoCheckout(root) && !hotUpdate && !entry.endsWith('/reanimated/ui-entry.ts')) {
+  const ui = spawnSync(process.execPath, ['scripts/build-ui-runtime.mjs'], { cwd: root, stdio: 'inherit' })
   if (ui.status !== 0) {
     console.error('[bundle-app] build-ui-runtime failed')
     process.exit(ui.status || 1)
   }
+}
+
+function libraryEntryFor(bundleMode) {
+  const source = resolve(root, 'src/index.ts')
+  if (existsSync(source)) return source
+  const development = resolve(root, 'dist/index.development.js')
+  if (bundleMode === 'development' && existsSync(development)) return development
+  return resolve(root, 'dist/index.js')
 }
 
 function createRefreshTransform() {

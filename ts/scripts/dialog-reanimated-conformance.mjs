@@ -22,10 +22,10 @@ import { dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { reanimatedBunPlugin } from './reanimated-bun-plugin.mjs'
+import { resolveServiceBinary } from './service-binary.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const tsRoot = resolve(here, '..')
-const repoRoot = resolve(tsRoot, '..')
 const guiRoot = resolve(process.env.RNGPUI_GUI_ROOT || join(homedir(), 'team-machine', 'gui'))
 const rngEntry = resolve(tsRoot, 'src/index.ts')
 const fixture = resolve(
@@ -154,8 +154,7 @@ await Bun.write(outJs, code)
 log(`bundled ${(code.length / 1024).toFixed(0)} KB → ${outJs}`)
 
 // 3. run offscreen + assert.
-const serviceBin = resolve(process.env.RNGPUI_SERVICE || resolve(repoRoot, 'rust', 'target', 'release', 'rngpui-service'))
-if (!existsSync(serviceBin)) fail(`rngpui-service not found: ${serviceBin}`)
+const serviceBin = resolveServiceBinary().path
 
 let output = ''
 const child = spawn(serviceBin, [], {
