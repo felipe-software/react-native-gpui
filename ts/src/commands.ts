@@ -3,7 +3,7 @@
 // Components call `sendCommand`; the render layer wires the sink to the bridge.
 import type { ChatListMessage, ChatListMessagePatch, ChatListRevealAlign } from "./chat-list-types";
 import { platformRequest } from "./platform-services";
-import { sendHostCommand, type RendererProvenance, type SerializedTerminalFrame } from "./runtime";
+import { sendHostCommand, type RendererProvenance } from "./runtime";
 
 export type AppCommandBinding = {
     id: string;
@@ -47,12 +47,6 @@ export type Command =
     | { $cmd: "reload"; id: number }
     | { $cmd: "scrollTo"; id: number; x?: number; y?: number }
     | { $cmd: "scrollToEnd"; id: number }
-    | {
-          $cmd: "terminalSession";
-          id: number;
-          sessionId: string;
-          frames: SerializedTerminalFrame[];
-      }
     | { $cmd: "chatList"; id: number; op: "append" | "prepend"; messages: ChatListMessage[] }
     | { $cmd: "chatList"; id: number; op: "update"; patches: ChatListMessagePatch[] }
     | { $cmd: "chatList"; id: number; op: "clear" | "scrollToBottom" | "scrollToTop" }

@@ -1,8 +1,7 @@
-import { accessSync, chmodSync, constants, copyFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isServiceLibrary } from "./native-libs.mjs";
 
 export const MAIN_PACKAGE = "@felipe-software/react-native-gpui";
 export const SERVICE_NAME = "rngpui-service";
@@ -30,7 +29,6 @@ export function isRepoCheckout(root = packageRoot) {
 export function resolveServiceBinary({ env = process.env, root = packageRoot } = {}) {
     const found = findServiceBinary(env, root);
     if (found.source !== "RNGPUI_SERVICE") ensureExecutable(found.path);
-    stageCargoLibraries(found.path);
     return found;
 }
 
@@ -99,28 +97,4 @@ function ensureExecutable(path) {
     } catch {
         chmodSync(path, 0o755);
     }
-}
-
-function stageCargoLibraries(binary) {
-    const dir = dirname(binary);
-    const buildDir = join(dir, "build");
-    if (!existsSync(buildDir)) return;
-    for (const library of findServiceLibraries(buildDir)) {
-        const destination = join(dir, library.split("/").pop());
-        if (!existsSync(destination)) copyFileSync(library, destination);
-    }
-}
-
-function findServiceLibraries(dir) {
-    const out = [];
-    const stack = [dir];
-    while (stack.length) {
-        const current = stack.pop();
-        for (const entry of readdirSync(current, { withFileTypes: true })) {
-            const path = join(current, entry.name);
-            if (entry.isDirectory()) stack.push(path);
-            else if (isServiceLibrary(entry.name)) out.push(path);
-        }
-    }
-    return out;
 }

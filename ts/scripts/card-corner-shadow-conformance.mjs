@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-// Gate: the two native stage surfaces — the GhosttyTerminal (painted into Metal)
+// Gate: two stage surfaces — a View card (painted into Metal)
 // and the WebView (an AppKit underlay below Metal) — both round their corners to
 // the element's borderRadius and cast a soft drop shadow.
 //
-// TERMINAL is verified by PIXELS off the in-service capture (sandbox-safe): the
-// rounded corner must show the bright field through the arc (not a square terminal
+// CARD is verified by PIXELS off the in-service capture (sandbox-safe): the
+// rounded corner must show the bright field through the arc (not a square card
 // fill), and a darker shadow band must sit just outside the card edge.
 //
 // WEBVIEW page content can't render under a sandboxed shell (WebContent XPC never
@@ -27,7 +27,7 @@ const SCALE = 2;
 
 // fixture geometry (logical px) — must match the fixture.
 const FIELD = { r: 0xf2, g: 0xc8, b: 0x4b };
-const TERMINAL = { x: 480, y: 60, w: 360, h: 460, r: 24, fill: { r: 0x05, g: 0x05, b: 0x07 } };
+const CARD = { x: 480, y: 60, w: 360, h: 460, r: 24, fill: { r: 0x05, g: 0x05, b: 0x07 } };
 
 const fails = [];
 function check(ok, message) {
@@ -63,34 +63,34 @@ if (!existsSync(OUT)) fail(`shot did not produce a capture at ${OUT}\n${shotLog}
 const img = readPng(OUT);
 const samp = (lx, ly) => pixelAt(img, Math.round(lx * SCALE), Math.round(ly * SCALE));
 
-// ---- terminal: rounded corner clip ----
-// the extreme corner of a r=24 card must be the FIELD (clipped away), not terminal fill.
-const tlCorner = samp(TERMINAL.x + 1, TERMINAL.y + 1);
+// ---- card: rounded corner clip ----
+// the extreme corner of a r=24 card must be the FIELD (clipped away), not card fill.
+const tlCorner = samp(CARD.x + 1, CARD.y + 1);
 check(
-    !near(tlCorner, TERMINAL.fill, 24),
-    `terminal TL corner is not clipped — got #${hex(tlCorner)} (looks like the square terminal fill; the rounded arc should expose the field)`,
+    !near(tlCorner, CARD.fill, 24),
+    `card TL corner is not clipped — got #${hex(tlCorner)} (looks like the square card fill; the rounded arc should expose the field)`,
 );
-// deep inside the card (past the arc) must BE the terminal fill.
-const tlInside = samp(TERMINAL.x + TERMINAL.r + 8, TERMINAL.y + TERMINAL.r + 8);
+// deep inside the card (past the arc) must BE the card fill.
+const tlInside = samp(CARD.x + CARD.r + 8, CARD.y + CARD.r + 8);
 check(
-    near(tlInside, TERMINAL.fill, 24),
-    `terminal interior should be the terminal fill — got #${hex(tlInside)}`,
+    near(tlInside, CARD.fill, 24),
+    `card interior should be the card fill — got #${hex(tlInside)}`,
 );
 
-// ---- terminal: drop shadow band just outside the edge ----
+// ---- card: drop shadow band just outside the edge ----
 // a soft shadow darkens the bright field for a few px outside the left edge before
 // it recovers to the field. sample a point clear of the rounded corners (mid-height).
-const midY = TERMINAL.y + TERMINAL.h / 2;
-const justOutside = samp(TERMINAL.x - 4, midY); // inside the shadow band
-const farOutside = samp(TERMINAL.x - 40, midY); // past the shadow, ~field
+const midY = CARD.y + CARD.h / 2;
+const justOutside = samp(CARD.x - 4, midY); // inside the shadow band
+const farOutside = samp(CARD.x - 40, midY); // past the shadow, ~field
 const fieldRef = brightness(FIELD);
 check(
     brightness(justOutside) < fieldRef - 18,
-    `terminal drop shadow missing — pixel 4px outside the left edge (#${hex(justOutside)}, lum ${brightness(justOutside).toFixed(0)}) should be darker than the field (lum ${fieldRef.toFixed(0)})`,
+    `card drop shadow missing — pixel 4px outside the left edge (#${hex(justOutside)}, lum ${brightness(justOutside).toFixed(0)}) should be darker than the field (lum ${fieldRef.toFixed(0)})`,
 );
 check(
     brightness(justOutside) < brightness(farOutside) - 8,
-    `terminal shadow should fall off — 4px out (lum ${brightness(justOutside).toFixed(0)}) must be darker than 40px out (lum ${brightness(farOutside).toFixed(0)})`,
+    `card shadow should fall off — 4px out (lum ${brightness(justOutside).toFixed(0)}) must be darker than 40px out (lum ${brightness(farOutside).toFixed(0)})`,
 );
 
 // ---- step 2: webview native corner-clip + decor-shadow path (log proof) ----
@@ -112,7 +112,7 @@ if (fails.length) {
     fail(fails.join("\n"));
 }
 console.log(
-    `CARD_CORNER_SHADOW_CONFORMANCE_PASS terminal-corner-clipped + terminal-shadow-band + webview-host-clip + webview-decor-shadow capture=${OUT}`,
+    `CARD_CORNER_SHADOW_CONFORMANCE_PASS card-corner-clipped + card-shadow-band + webview-host-clip + webview-decor-shadow capture=${OUT}`,
 );
 
 function hex(c) {

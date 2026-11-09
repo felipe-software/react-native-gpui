@@ -173,9 +173,8 @@ Key files: `rust/src/{service.rs,bridge.rs,hermes.rs,hermes_preamble.js}`, `rust
 ```sh
 # binary
 cd ~/rng-hermes/rust && HERMES_ROOT=~/github/hermes cargo build --release --bin rngpui-service
-#   build.rs auto-adds rpaths; for a runnable binary the dylibs must sit next to it:
-GH=$(find target/release/build -path '*ghostty-install/lib' -type d | head -1)
-cp "$GH"/libghostty-vt*.dylib ~/github/hermes/build/lib/libhermesvm.dylib target/release/
+#   build.rs auto-adds rpaths; for a runnable binary the dylib must sit next to it:
+cp ~/github/hermes/build/lib/libhermesvm.dylib target/release/
 
 # bundle (Bun is only the dev bundler; output runs under Hermes)
 cd ~/team-machine/gui && RNGPUI_LOCAL=~/rng-hermes/ts \
@@ -237,7 +236,7 @@ plan (§4) so their parked work resumes on the right base.
 - `git merge` auto-merges `service.rs`/`bridge.rs` but it's **semantically wrong** — force my version (§3).
 - Hermes can't parse `import.meta` — the bundler strips it via `define` (already handled in bundle-app-hermes.mjs).
 - The connect-blocker was `new Headers()`, not fetch — Hermes lacks many web globals; the preamble polyfills the set.
-- libhermesvm + libghostty dylibs must sit **next to the binary** (`@executable_path` rpath) or it won't launch.
+- libhermesvm must sit **next to the binary** (`@executable_path` rpath) or it won't launch.
 - zsh does NOT word-split unquoted vars (`env $VARS cmd` fails) — inline env assignments.
 - Recursive force-deletes with shell globs are guarded in this environment — use `trash` or explicit paths.
 - Keep the JS-eval / GPUI-init **overlap** in `main()` (§5) — it's the <200 ms win.

@@ -95,18 +95,6 @@ export type SerializedNode = {
     nativeResize?: SerializedNativeResize;
     /** native-only press-drag selection group */
     nativeListGroup?: string;
-    /** native terminal session key; changing it resets the native Ghostty parser */
-    terminalSessionId?: string;
-    /** ordered terminal frames consumed by the native Ghostty terminal element */
-    terminalFrames?: SerializedTerminalFrame[];
-};
-
-export type SerializedTerminalFrame = {
-    seq: number;
-    kind: "snapshot" | "bytes" | "resize";
-    data?: string;
-    cols?: number;
-    rows?: number;
 };
 
 export type SerializedNativeResize = {
@@ -176,9 +164,6 @@ export type BridgeEvent =
           scrollContentWidth?: number;
           scrollContentHeight?: number;
           layout?: { x: number; y: number; width: number; height: number };
-          /** GhosttyTerminal `terminalViewport` measure: grid cols/rows */
-          cols?: number;
-          rows?: number;
           oldLine?: number;
           newLine?: number;
           /** `pseudo` lane: absolute native hover/press state of the node's hitbox */

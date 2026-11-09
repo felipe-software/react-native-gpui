@@ -10,7 +10,7 @@ const REACT_EXPORTS = [
 const RNGPUI_EXPORTS = [
   'createRoot', 'render', 'AppRegistry', 'unstable_batchedUpdates',
   'View', 'Text', 'TextInput', 'Image', 'Svg', 'WebView',
-  'SystemView', 'GhosttyTerminal', 'ScrollView', 'Pressable', 'TouchableOpacity',
+  'SystemView', 'ScrollView', 'Pressable', 'TouchableOpacity',
   'RefreshControl', 'Diff',
   'TouchableHighlight', 'TouchableWithoutFeedback', 'ListGroup', 'Button', 'NativeButton',
   'NativeTextInput', 'SafeAreaView',

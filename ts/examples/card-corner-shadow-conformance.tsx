@@ -1,5 +1,5 @@
-// Corner-clip + drop-shadow conformance fixture for the two native stage surfaces:
-// a WebView (composited as an AppKit underlay below Metal) and the GhosttyTerminal
+// Corner-clip + drop-shadow conformance fixture for two stage surfaces:
+// a WebView (composited as an AppKit underlay below Metal) and a View card
 // (painted into the Metal scene). Both carry a borderRadius + a boxShadow, exactly
 // the way the team-machine stage drives them. Rendered on a bright contrasting field so
 // the rounded clip (the bright field shows through the corner, not a square surface)
@@ -10,7 +10,7 @@
 // WebContent XPC can't start (sandboxed shells): the host layer paints that opaque
 // base, masksToBounds clips it to the radius, so the corner pixel is the bright field
 // — not the body color — regardless of whether the page itself painted.
-import { GhosttyTerminal, render, View, WebView } from "../src/index";
+import { render, View, WebView } from "../src/index";
 
 // a bright field so any square surface poking past the rounded corner is obvious,
 // and the shadow reads as a darker falloff against it.
@@ -50,34 +50,18 @@ function App() {
         }}
         boxShadow={CARD_SHADOW}
       />
-      <GhosttyTerminal
-        accessibilityLabel="corner-shadow terminal"
-        sessionId="card-corner-fixture"
-        frames={[
-          {
-            seq: 1,
-            kind: "snapshot",
-            cols: 40,
-            rows: 18,
-            data: btoa("rounded terminal card\r\n$ echo hello\r\nhello\r\n"),
-          },
-        ]}
-        style={
-          {
-            position: "absolute",
-            left: 480,
-            top: 60,
-            width: 360,
-            height: 460,
-            backgroundColor: "#050507",
-            color: "#e4e4e7",
-            fontFamily: "Menlo",
-            fontSize: 13,
-            lineHeight: 18,
-            borderRadius: CARD_RADIUS,
-            overflow: "hidden",
-          } as never
-        }
+      <View
+        accessibilityLabel="corner-shadow card"
+        style={{
+          position: "absolute",
+          left: 480,
+          top: 60,
+          width: 360,
+          height: 460,
+          backgroundColor: "#050507",
+          borderRadius: CARD_RADIUS,
+          overflow: "hidden",
+        }}
         boxShadow={CARD_SHADOW}
       />
     </View>

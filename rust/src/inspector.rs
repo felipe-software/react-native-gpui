@@ -1579,7 +1579,7 @@ fn paints_over(hit: &InspectorHit) -> bool {
     }
     matches!(
         hit.target.element_type.as_str(),
-        "text" | "image" | "svg" | "textinput" | "textarea" | "ghostty-terminal"
+        "text" | "image" | "svg" | "textinput" | "textarea"
     )
 }
 

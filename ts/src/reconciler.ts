@@ -350,8 +350,6 @@ const PROP_TO_EVENT: Record<string, string> = {
     onScroll: "scroll",
     onMessage: "message",
     onLoad: "load",
-    onInsertText: "terminalText",
-    onMeasureViewport: "terminalViewport",
     onToggleFile: "toggleFile",
     onShowMore: "showMore",
     onLineClick: "lineClick",
@@ -512,7 +510,6 @@ export function dispatchEvent(
     else if (event === "keyPress") result = fn(createKeyPressEvent(payload));
     else if (event === "keyUp") result = fn(createKeyPressEvent(payload, "keyUp"));
     else if (event === "submit") result = fn(createSubmitEvent(payload.value ?? ""));
-    else if (event === "terminalText") result = fn(payload.value ?? "");
     else if (event === "drop") {
         let paths: string[] = [];
         try {
@@ -525,8 +522,6 @@ export function dispatchEvent(
         }
         result = fn({ nativeEvent: { paths } });
     }
-    else if (event === "terminalViewport")
-        result = fn({ cols: payload.cols ?? 0, rows: payload.rows ?? 0 });
     else if (CHAT_LIST_EVENTS.has(event)) result = fn({ nativeEvent: payload.chat ?? null });
     else result = fn(createEvent(event, payload));
 
@@ -1354,14 +1349,6 @@ function serialize(inst: Instance | TextInstance, context: PortalContext, inheri
             if (topFadeStart != null) node.systemTopFadeStart = topFadeStart;
             break;
         }
-        case "GhosttyTerminal": {
-            node.type = "ghostty-terminal";
-            const sessionId = stringProp(props, "sessionId");
-            if (sessionId) node.terminalSessionId = sessionId;
-            const frames = normalizeTerminalFrames(props.frames);
-            if (frames.length) node.terminalFrames = frames;
-            break;
-        }
         case "ChatList":
             node.type = "chatlist";
             node.chatList = serializeChatListOptions(props);
@@ -1490,33 +1477,6 @@ function normalizeSystemShadow(value: unknown): SerializedNode["systemShadow"] |
     if (typeof spec.opacity === "number") out.opacity = spec.opacity;
     // emit only when something is actually set, so a `shadow={{}}` doesn't draw.
     return Object.keys(out).length ? out : undefined;
-}
-
-function normalizeTerminalFrames(value: unknown): NonNullable<SerializedNode["terminalFrames"]> {
-    if (!Array.isArray(value)) return [];
-    const out: NonNullable<SerializedNode["terminalFrames"]> = [];
-    for (const frame of value) {
-        if (!frame || typeof frame !== "object") continue;
-        const typed = frame as {
-            seq?: unknown;
-            kind?: unknown;
-            data?: unknown;
-            cols?: unknown;
-            rows?: unknown;
-        };
-        const seq = typeof typed.seq === "number" && Number.isFinite(typed.seq) ? Math.floor(typed.seq) : 0;
-        if (seq <= 0) continue;
-        if (typed.kind !== "snapshot" && typed.kind !== "bytes" && typed.kind !== "resize") continue;
-        const next: NonNullable<SerializedNode["terminalFrames"]>[number] = {
-            seq,
-            kind: typed.kind,
-        };
-        if (typeof typed.data === "string") next.data = typed.data;
-        if (typeof typed.cols === "number" && Number.isFinite(typed.cols)) next.cols = Math.max(1, Math.floor(typed.cols));
-        if (typeof typed.rows === "number" && Number.isFinite(typed.rows)) next.rows = Math.max(1, Math.floor(typed.rows));
-        out.push(next);
-    }
-    return out;
 }
 
 function imageSource(source: unknown): string | undefined {

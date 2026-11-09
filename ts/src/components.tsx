@@ -18,7 +18,6 @@ import {
     type MutableRefObject,
 } from "react";
 import { sendCommand } from "./commands";
-import type { SerializedTerminalFrame } from "./runtime";
 import type {
     ViewProps,
     TextStyle,
@@ -322,59 +321,6 @@ export const WebView = forwardRef<WebViewHandle, WebViewProps>(function WebView(
     }, [handle, props.nativeHandleRef]);
     const { nativeHandleRef: _nativeHandleRef, ...hostProps } = props;
     return createElement("WebView" as any, { ...hostProps, __rngpuiHostId: commandId });
-});
-
-export type GhosttyTerminalFrame = SerializedTerminalFrame;
-
-export interface GhosttyTerminalProps extends AccessibilityProps {
-    style?: StyleProp<ViewStyle>;
-    boxShadow?: ViewStyle["boxShadow"];
-    sessionId?: string;
-    frames?: GhosttyTerminalFrame[];
-    onPress?: (event: unknown) => void;
-    onKeyPress?: (event: unknown) => void;
-    onLayout?: (event: LayoutChangeEvent) => void;
-    // raw text produced natively (clipboard paste, dropped file paths) to write
-    // straight to the PTY.
-    onInsertText?: (text: string) => void;
-    // the grid the element measured from its own painted bounds + real font cell
-    // metrics; size the PTY to this so the terminal fits the stage exactly.
-    onMeasureViewport?: (viewport: { cols: number; rows: number }) => void;
-}
-
-export interface GhosttyTerminalHandle extends NativeHostHandle {
-    showSession: (sessionId: string, frames: GhosttyTerminalFrame[]) => void;
-}
-
-export const GhosttyTerminal = forwardRef<GhosttyTerminalHandle, GhosttyTerminalProps>(function GhosttyTerminal(props, ref) {
-    const host = useRef<NativeHostHandle | null>(null);
-    const commandIdRef = useRef<number | null>(null);
-    if (commandIdRef.current == null) commandIdRef.current = createHostCommandId();
-    const commandId = commandIdRef.current;
-    const handle = useMemo<GhosttyTerminalHandle>(
-        () => ({
-            id: commandId,
-            measure(callback) {
-                host.current?.measure?.(callback);
-            },
-            measureInWindow(callback) {
-                host.current?.measureInWindow?.(callback);
-            },
-            measureLayout(relativeToNativeNode, onSuccess, onFail) {
-                host.current?.measureLayout?.(relativeToNativeNode, onSuccess, onFail);
-            },
-            showSession(sessionId, frames) {
-                sendCommand({ $cmd: "terminalSession", id: commandId, sessionId, frames });
-            },
-        }),
-        [commandId],
-    );
-    useImperativeHandle(ref, () => handle, [handle]);
-    return createElement("GhosttyTerminal" as any, {
-        ...props,
-        ref: host,
-        __rngpuiHostId: commandId,
-    });
 });
 
 // ── ScrollView ──────────────────────────────────────────────────────
