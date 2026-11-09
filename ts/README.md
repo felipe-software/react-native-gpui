@@ -52,7 +52,7 @@ the bundle; the library declares it as a peer dependency.
 | Linux arm64 | `@felipe-software/react-native-gpui-linux-arm64` | Ubuntu 24.04 (glibc 2.39 or newer) |
 | macOS Apple silicon | `@felipe-software/react-native-gpui-darwin-arm64` | macOS 14 |
 
-Each platform package holds `rngpui-service`, `libghostty-vt` and `ui-runtime.js`; there is no
+Each platform package holds `rngpui-service` and `ui-runtime.js`; there is no
 Intel macOS build. The CLI and the bundler run on [Bun](https://bun.sh) 1.3 or newer.
 
 **Linux runtime.** The service loads WebKitGTK's JavaScriptCore at startup
@@ -536,7 +536,7 @@ recently used files once it passes 256 MB.
 Releases ship `rngpui-service` in the platform packages above. In a checkout, `npm run build`
 writes it to `native/` instead, and every launcher uses the newer of `native/rngpui-service`
 and `../rust/target/release/rngpui-service`, so a plain `cargo build` is picked up too. To
-build it yourself you need a Rust toolchain and Zig for the terminal element. macOS supplies the JavaScriptCore framework; on Linux,
+build it yourself you need a Rust toolchain. macOS supplies the JavaScriptCore framework; on Linux,
 install a C/C++ toolchain and WebKitGTK's JavaScriptCore headers:
 
 ```sh
@@ -544,9 +544,6 @@ install a C/C++ toolchain and WebKitGTK's JavaScriptCore headers:
 sudo apt install build-essential pkg-config libjavascriptcoregtk-4.1-dev \
   libxkbcommon-x11-dev libasound2-dev libfontconfig-dev libfreetype-dev
 ```
-
-`build:rust` checks out the Ghostty commit `libghostty-vt-sys` pins (it needs Zig 0.15.2)
-unless `GHOSTTY_SOURCE_DIR` points at a Ghostty source tree.
 
 ```sh
 npm run build        # builds the Rust service, copies it into native/, then tsc → dist/

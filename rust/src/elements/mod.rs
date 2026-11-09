@@ -7,7 +7,6 @@ pub mod native_control;
 pub mod native_scroll;
 mod svg;
 pub mod system;
-mod terminal;
 mod text;
 pub mod webview;
 
@@ -29,10 +28,6 @@ pub use input::ReactInputElement;
 pub use native_control::ReactNativeControlElement;
 pub use svg::ReactSvgElement;
 pub use system::ReactSystemElement;
-pub use terminal::{
-    ReactGhosttyTerminalElement, effective_presentation, painted_presentation, present_session,
-    retain_presentations,
-};
 pub use text::ReactTextElement;
 pub use webview::ReactWebViewElement;
 
@@ -105,23 +100,6 @@ pub struct NativeResizeSpec {
     pub max: Option<f32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TerminalFrameKind {
-    Snapshot,
-    Bytes,
-    Resize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TerminalFrame {
-    pub seq: u64,
-    pub kind: TerminalFrameKind,
-    /// base64-encoded PTY bytes for snapshot/bytes frames.
-    pub data: Option<String>,
-    pub cols: Option<u16>,
-    pub rows: Option<u16>,
-}
-
 /// A `<SystemView>` native outer drop shadow, parsed from the `shadow` prop. Colors
 /// are an Hsla (alpha unused — opacity is carried separately the way CALayer wants it);
 /// `offset_*` are in CSS screen-space (+y down), translated to layer geometry by the
@@ -162,12 +140,6 @@ pub struct SystemPayload {
     pub shadow: Option<SystemShadowSpec>,
     pub edge_fade: Option<f32>,
     pub top_fade_start: Option<f32>,
-}
-
-#[derive(Clone, PartialEq)]
-pub struct TerminalPayload {
-    pub session_id: Option<String>,
-    pub frames: Arc<[TerminalFrame]>,
 }
 
 /// RN's `<Image resizeMode>`. Carried as its own enum because GPUI's `ObjectFit`
@@ -215,7 +187,6 @@ pub enum SpecializedElement {
     System(SystemPayload),
     Input(InputPayload),
     NativeControl(InputPayload),
-    Terminal(TerminalPayload),
     Diff(DiffPayload),
     ChatList(chat_list::ChatListOptions),
 }
@@ -236,7 +207,7 @@ pub struct ReactElement {
     /// committed String while each draw clones this handle instead of its bytes.
     pub cached_text: gpui::SharedString,
     /// type-specific retained data. An ordinary view carries one empty pointer-sized
-    /// option instead of storage for input, terminal, native-surface, image, and diff data.
+    /// option instead of storage for input, native-surface, image, and diff data.
     pub specialized: Option<Arc<SpecializedElement>>,
     /// optional view-only compositor effects. Allocated inline because these two values
     /// are small and can combine with every host kind.
@@ -374,23 +345,6 @@ impl ReactElement {
         }
     }
 
-    pub fn terminal_payload(&self) -> Option<&TerminalPayload> {
-        match self.specialized.as_deref() {
-            Some(SpecializedElement::Terminal(payload)) => Some(payload),
-            _ => None,
-        }
-    }
-
-    pub fn terminal_session_id(&self) -> Option<&str> {
-        self.terminal_payload()
-            .and_then(|payload| payload.session_id.as_deref())
-    }
-
-    pub fn terminal_frames(&self) -> &[TerminalFrame] {
-        self.terminal_payload()
-            .map_or(&[], |payload| payload.frames.as_ref())
-    }
-
     pub fn diff_payload(&self) -> Option<&DiffPayload> {
         match self.specialized.as_deref() {
             Some(SpecializedElement::Diff(payload)) => Some(payload),
@@ -474,8 +428,6 @@ fn event_bit(name: &str) -> Option<u32> {
         "scroll" => 27,
         "startShouldSetResponder" => 28,
         "startShouldSetResponderCapture" => 29,
-        "terminalText" => 30,
-        "terminalViewport" => 31,
         "touchCancel" => 32,
         "touchEnd" => 33,
         "touchMove" => 34,
@@ -630,9 +582,7 @@ pub fn is_structure_preserving_tree_update(
 /// True when a React commit preserves the exact host tree and changes only style
 /// keys that paint in place. Delta refs make this proportional to the changed paths:
 /// an unchanged subtree is the same Arc and returns immediately. Unknown fields and
-/// style keys take the safe full-layout path. Terminal session/frame payloads are
-/// paint content inside a fixed host box; if a resize changes the terminal's internal
-/// row count, GPUI's retained-layout node-count guard rejects reuse automatically.
+/// style keys take the safe full-layout path.
 pub fn is_paint_only_tree_update(previous: &Arc<ReactElement>, next: &Arc<ReactElement>) -> bool {
     if Arc::ptr_eq(previous, next) {
         return true;
@@ -670,7 +620,6 @@ pub fn is_paint_only_tree_update(previous: &Arc<ReactElement>, next: &Arc<ReactE
 
 fn specialized_change_is_paint_only(previous: &ReactElement, next: &ReactElement) -> bool {
     match (previous.specialized.as_deref(), next.specialized.as_deref()) {
-        (Some(SpecializedElement::Terminal(_)), Some(SpecializedElement::Terminal(_))) => true,
         (Some(SpecializedElement::ChatList(_)), Some(SpecializedElement::ChatList(_))) => true,
         (Some(SpecializedElement::Diff(previous)), Some(SpecializedElement::Diff(next))) => {
             previous.row_count() == next.row_count() && previous.diff_scroll == next.diff_scroll
@@ -750,9 +699,6 @@ pub fn create_element(element: Arc<ReactElement>, window_id: u64) -> AnyElement 
         "image" => ReactImageElement::new(element, window_id).into_any_element(),
         "webview" => ReactWebViewElement::new(element).into_any_element(),
         "system" => ReactSystemElement::new(element).into_any_element(),
-        "ghostty-terminal" => {
-            ReactGhosttyTerminalElement::new(element, window_id).into_any_element()
-        }
         "textinput" | "textarea" => {
             ReactInputElement::new(element, window_id, None).into_any_element()
         }

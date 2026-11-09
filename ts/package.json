@@ -24,7 +24,6 @@
         "scripts/bundle-app.mjs",
         "scripts/conformance-utils.mjs",
         "scripts/hot-update-alias-plugin.mjs",
-        "scripts/native-libs.mjs",
         "scripts/native-package-exports-plugin.mjs",
         "scripts/pixel.mjs",
         "scripts/png.mjs",
@@ -34,8 +33,7 @@
         "scripts/service-binary.d.mts",
         "src/reanimated",
         "src/refresh.ts",
-        "README.md",
-        "THIRD-PARTY-LICENSES"
+        "README.md"
     ],
     "scripts": {
         "build": "npm run prebuild:reanimated && npm run build:rust && npm run build:native && npm run build:ts",

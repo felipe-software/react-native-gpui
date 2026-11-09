@@ -28,13 +28,9 @@ RNGPUI_BUNDLE=/tmp/kitchen.js RNGPUI_NO_ACTIVATE=1 ../rust/target/release/rngpui
 The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Wayland or X11.
 
 - Build deps: a C/C++ toolchain, `pkg-config`, WebKitGTK's JavaScriptCore headers
-  (`libjavascriptcoregtk-4.1-dev`), `libxkbcommon-x11-dev`, `libasound2-dev`, and Zig 0.15.2.
-  `npm run build:rust` (scripts/build-rust.mjs) checks out the Ghostty commit that
-  `libghostty-vt-sys` pins into `~/.cache/rngpui/` unless `GHOSTTY_SOURCE_DIR` is set; the
-  crate's own fetch cannot be used because it patches `build.zig` text that commit lacks.
+  (`libjavascriptcoregtk-4.1-dev`), `libxkbcommon-x11-dev` and `libasound2-dev`.
 - Runtime: JavaScriptCore is resolved with `dlopen` (rust/jsc_shim/jsc_loader_linux.cpp), so
   any of `libjavascriptcoregtk-4.1/6.0/4.0` works and a missing one prints install hints.
-  `libghostty-vt.so.0` ships beside the binary and is found through an `$ORIGIN` rpath.
 - Display: rust/src/linux_display.rs picks Wayland when its socket answers, else X11
   (`RNGPUI_LINUX_BACKEND` overrides). It probes the Wayland registry for
   `zxdg_decoration_manager_v1`; without it (GNOME) rust/src/linux_frame.rs draws the title bar
@@ -296,7 +292,7 @@ versions that the script bumps in place. The checked-in `ts/package.json` has no
 
 `@felipe-software/react-native-gpui` and its platform packages
 (`@felipe-software/react-native-gpui-linux-x64`, `-linux-arm64`, `-darwin-arm64`, each
-`rngpui-service` + libghostty-vt + `ui-runtime.js`) are released from CI, the same way as
+`rngpui-service` + `ui-runtime.js`) are released from CI, the same way as
 `felipe-software/react-native-back-gesture`. Never `npm publish` from a laptop.
 
 1. A merge to `main` runs `.github/workflows/release-main.yaml` →

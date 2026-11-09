@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { isServiceLibrary } from "./native-libs.mjs";
 import {
     MAIN_PACKAGE,
     PLATFORMS,
@@ -81,18 +80,14 @@ function stagePlatform(version, outDir) {
     const uiRuntime = join(packageRoot, "dist", UI_RUNTIME_NAME);
     if (!existsSync(service)) throw new Error(`${service} is missing; run npm run build:rust && npm run build:native`);
     if (!existsSync(uiRuntime)) throw new Error(`${uiRuntime} is missing; run bun scripts/build-ui-runtime.mjs`);
-    const libraries = readdirSync(nativeDir).filter((name) => isServiceLibrary(name));
-    if (libraries.length === 0) throw new Error(`no libghostty-vt library beside ${service}`);
 
     const dir = resolve(outDir ?? join(packageRoot, "npm", key));
     rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir, { recursive: true });
     stage(service, join(dir, SERVICE_NAME));
-    for (const library of libraries) stage(join(nativeDir, library), join(dir, library));
     stage(uiRuntime, join(dir, UI_RUNTIME_NAME));
-    stripDebugInfo(dir, [SERVICE_NAME, ...libraries]);
+    stripDebugInfo(dir, [SERVICE_NAME]);
     copyFileSync(join(packageRoot, "LICENSE"), join(dir, "LICENSE"));
-    copyFileSync(join(packageRoot, "THIRD-PARTY-LICENSES"), join(dir, "THIRD-PARTY-LICENSES"));
     writeFileSync(join(dir, "README.md"), platformReadme(key));
     writeFileSync(join(dir, "package.json"), `${JSON.stringify(platformManifest(key, platform, version), null, 4)}\n`);
     return dir;
@@ -119,7 +114,7 @@ function platformReadme(key) {
         `# ${platformPackageName(key)}`,
         "",
         `The \`${SERVICE_NAME}\` binary of [${MAIN_PACKAGE}](https://www.npmjs.com/package/${MAIN_PACKAGE}) for ${key},`,
-        "with libghostty-vt and the worklet runtime beside it.",
+        "with the worklet runtime beside it.",
         "",
         `Do not install this package directly: \`${MAIN_PACKAGE}\` lists it as an optional dependency and`,
         "your package manager installs the one that matches your platform.",

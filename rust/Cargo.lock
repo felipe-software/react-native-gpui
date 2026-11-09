@@ -3403,18 +3403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "int-enum"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e366a1634cccc76b4cfd3e7580de9b605e4d93f1edac48d786c1f867c0def495"
-dependencies = [
- "proc-macro2",
- "proc-macro2-diagnostics",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3752,21 +3740,6 @@ dependencies = [
  "arbitrary",
  "cc",
 ]
-
-[[package]]
-name = "libghostty-vt"
-version = "0.1.1"
-source = "git+https://github.com/Uzaaft/libghostty-rs?rev=a0cf90818c68cc81d1e7433856216011c410f6ce#a0cf90818c68cc81d1e7433856216011c410f6ce"
-dependencies = [
- "bitflags 2.11.1",
- "int-enum",
- "libghostty-vt-sys",
-]
-
-[[package]]
-name = "libghostty-vt-sys"
-version = "0.1.1"
-source = "git+https://github.com/Uzaaft/libghostty-rs?rev=a0cf90818c68cc81d1e7433856216011c410f6ce#a0cf90818c68cc81d1e7433856216011c410f6ce"
 
 [[package]]
 name = "libloading"
@@ -5194,18 +5167,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro2-diagnostics"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "version_check",
-]
-
-[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5573,7 +5534,6 @@ dependencies = [
  "gpui-component",
  "lb-wry",
  "libc",
- "libghostty-vt",
  "objc",
  "once_cell",
  "pkg-config",

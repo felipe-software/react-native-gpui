@@ -96,11 +96,9 @@ mod windows;
 use elements::webview::WebViewContent;
 use elements::{
     AccessibilityInfo, DiffPayload, InputPayload, ReactElement, SpecializedElement, SystemPayload,
-    TerminalPayload, TextPayload, ViewEffects, create_element,
+    TextPayload, ViewEffects, create_element,
 };
-use elements::{
-    NativeResizeEdge, NativeResizeSpec, SystemShadowSpec, TerminalFrame, TerminalFrameKind,
-};
+use elements::{NativeResizeEdge, NativeResizeSpec, SystemShadowSpec};
 #[cfg(target_os = "macos")]
 use raw_window_handle::HasWindowHandle;
 use style::{Dim, ElementStyle};
@@ -460,16 +458,6 @@ fn parse_json_tree(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from);
-    let terminal_session_id = obj
-        .get("terminalSessionId")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-    let terminal_frames: Vec<TerminalFrame> = obj
-        .get("terminalFrames")
-        .and_then(|v| v.as_array())
-        .map(|frames| frames.iter().filter_map(parse_terminal_frame).collect())
-        .unwrap_or_default();
     let style_json = obj.get("style").filter(|v| v.is_object()).cloned();
     let style = style_json
         .as_ref()
@@ -613,10 +601,6 @@ fn parse_json_tree(
         })),
         "textinput" | "textarea" => Some(SpecializedElement::Input(input_payload())),
         "nativebutton" | "nativeinput" => Some(SpecializedElement::NativeControl(input_payload())),
-        "ghostty-terminal" => Some(SpecializedElement::Terminal(TerminalPayload {
-            session_id: terminal_session_id,
-            frames: terminal_frames.into(),
-        })),
         "diff" => {
             let collapsed_paths = obj
                 .get("collapsedPaths")
@@ -675,42 +659,6 @@ fn parse_json_tree(
         interactive,
         pseudo_events,
     }))
-}
-
-fn parse_terminal_frame(value: &serde_json::Value) -> Option<TerminalFrame> {
-    let obj = value.as_object()?;
-    let seq = obj.get("seq")?.as_u64()?;
-    if seq == 0 {
-        return None;
-    }
-    let kind = match obj.get("kind")?.as_str()? {
-        "snapshot" => TerminalFrameKind::Snapshot,
-        "bytes" => TerminalFrameKind::Bytes,
-        "resize" => TerminalFrameKind::Resize,
-        _ => return None,
-    };
-    let data = obj
-        .get("data")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-    let cols = obj
-        .get("cols")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u16::try_from(v).ok())
-        .filter(|v| *v > 0);
-    let rows = obj
-        .get("rows")
-        .and_then(|v| v.as_u64())
-        .and_then(|v| u16::try_from(v).ok())
-        .filter(|v| *v > 0);
-    Some(TerminalFrame {
-        seq,
-        kind,
-        data,
-        cols,
-        rows,
-    })
 }
 
 fn parse_native_resize(value: &serde_json::Value) -> Option<NativeResizeSpec> {
@@ -1543,7 +1491,6 @@ impl TreeMetadata {
         crate::anim_overlay_tween::retain(&self.node_ids);
         crate::inspector::retain_sources(&self.node_ids);
         elements::retain_pointer_state(&self.node_ids);
-        elements::retain_presentations(&self.node_ids);
         elements::retain_native_layout_keys(&self.native_layout_keys);
         bridge::emit_cached_layout_for_new_subscribers(&self.layout_ids);
         elements::system::retain_system_views(&self.system_ids);
@@ -1794,7 +1741,7 @@ fn first_app_key_press_listener(el: &Arc<ReactElement>) -> Option<u64> {
 fn first_app_listener(el: &Arc<ReactElement>, event: &str) -> Option<u64> {
     let text_owner = matches!(
         el.element_type.as_str(),
-        "textinput" | "textarea" | "terminal" | "ghostty-terminal"
+        "textinput" | "textarea"
     );
     if !text_owner && el.listens(event) {
         return Some(el.global_id);
@@ -2739,11 +2686,6 @@ pub(crate) enum Incoming {
     AppTint {
         color: Option<gpui::Hsla>,
     },
-    TerminalSession {
-        id: u64,
-        session_id: String,
-        frames: Vec<TerminalFrame>,
-    },
     ChatList {
         id: u64,
         op: elements::chat_list::ChatListOp,
@@ -2816,10 +2758,6 @@ pub(crate) enum Incoming {
         request_id: Option<u64>,
     },
     DebugDump {
-        reply: flume::Sender<serde_json::Value>,
-    },
-    DebugTerminalPresentation {
-        id: u64,
         reply: flume::Sender<serde_json::Value>,
     },
     DebugTap {
@@ -3131,23 +3069,6 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
             "scrollToEnd" => id.map(|id| Incoming::ScrollToEnd { id }),
             "chatList" => {
                 elements::chat_list::parse_command(v).map(|(id, op)| Incoming::ChatList { id, op })
-            }
-            "terminalSession" => {
-                let id = id?;
-                let session_id = v.get("sessionId").and_then(|x| x.as_str())?;
-                if session_id.is_empty() {
-                    return None;
-                }
-                let frames = v
-                    .get("frames")
-                    .and_then(|x| x.as_array())
-                    .map(|frames| frames.iter().filter_map(parse_terminal_frame).collect())
-                    .unwrap_or_default();
-                Some(Incoming::TerminalSession {
-                    id,
-                    session_id: session_id.to_string(),
-                    frames,
-                })
             }
             "nativeLayout" => {
                 let key = v.get("key").and_then(|x| x.as_str())?;
@@ -3646,8 +3567,7 @@ fn route_target(msg: &Incoming, cx: &App) -> Option<u64> {
         | Incoming::Reload { id }
         | Incoming::ScrollTo { id, .. }
         | Incoming::ScrollToEnd { id }
-        | Incoming::ChatList { id, .. }
-        | Incoming::TerminalSession { id, .. } => windows::owner_of_node(*id, cx),
+        | Incoming::ChatList { id, .. } => windows::owner_of_node(*id, cx),
         Incoming::BlurInput => windows::window_with_focused_input(cx),
         Incoming::NativeContextMenu(_) => windows::last_pointer_window(),
         _ => None,
@@ -3660,7 +3580,6 @@ fn reply_sender(msg: &Incoming) -> Option<flume::Sender<serde_json::Value>> {
         | Incoming::DebugRealScroll { reply, .. }
         | Incoming::DebugClipboard { reply }
         | Incoming::DebugDump { reply }
-        | Incoming::DebugTerminalPresentation { reply, .. }
         | Incoming::DebugTap { reply, .. }
         | Incoming::DebugDropFiles { reply, .. }
         | Incoming::DebugRealTap { reply, .. }
@@ -6437,14 +6356,6 @@ fn main() {
                                 crate::anim_overlay::arm_paint_only_frame();
                                 cx.notify();
                             }
-                            Incoming::TerminalSession {
-                                id,
-                                session_id,
-                                frames,
-                            } => {
-                                elements::present_session(id, session_id, frames);
-                                cx.notify();
-                            }
                             Incoming::ChatList { id, op } => {
                                 elements::chat_list::apply(id, op);
                                 crate::anim_overlay::arm_paint_only_frame();
@@ -6502,17 +6413,6 @@ fn main() {
                                     "dockBadge": dock.badge,
                                     "dockAttentionInformational": dock.attention_informational,
                                     "dockAttentionCritical": dock.attention_critical,
-                                }));
-                            }
-                            Incoming::DebugTerminalPresentation { id, reply } => {
-                                let presentation = elements::painted_presentation(id);
-                                let _ = reply.send(serde_json::json!({
-                                    "ok": presentation.is_some(),
-                                    "type": "terminalPresentation",
-                                    "globalId": id,
-                                    "sessionId": presentation.as_ref().map(|value| &value.session_id),
-                                    "frameCount": presentation.as_ref().map(|value| value.frame_count).unwrap_or(0),
-                                    "paintCount": presentation.as_ref().map(|value| value.paint_count).unwrap_or(0),
                                 }));
                             }
                             Incoming::AppTint { .. } => {
@@ -6853,7 +6753,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppCommandBinding, AppCommandBindingSlot, Incoming, TerminalFrameKind,
+        AppCommandBinding, AppCommandBindingSlot, Incoming,
         accumulate_pending_root_paint_only, app_command_key_bindings, parse_incoming,
         parse_real_keystroke, position_for_byte_offset, should_apply_input_value,
     };
@@ -6897,31 +6797,6 @@ mod tests {
             pending_paint_only,
             true
         ));
-    }
-
-    #[test]
-    fn terminal_frame_commit_preserves_retained_layout() {
-        let first = tree_of(parse_incoming(&json!({
-            "globalId": 20_000,
-            "type": "ghostty-terminal",
-            "terminalSessionId": "ab-terminal",
-            "terminalFrames": [
-                { "seq": 1, "kind": "snapshot", "data": "YWJj", "cols": 120, "rows": 40 }
-            ],
-            "style": { "width": 800, "height": 600 }
-        })));
-        let next = tree_of(parse_incoming(&json!({
-            "globalId": 20_000,
-            "type": "ghostty-terminal",
-            "terminalSessionId": "ab-terminal",
-            "terminalFrames": [
-                { "seq": 1, "kind": "snapshot", "data": "YWJj", "cols": 120, "rows": 40 },
-                { "seq": 2, "kind": "bytes", "data": "ZA==" }
-            ],
-            "style": { "width": 800, "height": 600 }
-        })));
-
-        assert!(crate::elements::is_paint_only_tree_update(&first, &next));
     }
 
     #[test]
@@ -7038,33 +6913,6 @@ mod tests {
         } else {
             panic!("expected clearInput command");
         }
-    }
-
-    #[test]
-    fn parses_terminal_session_command_with_frames() {
-        let incoming = parse_incoming(&json!({
-            "$cmd": "terminalSession",
-            "id": 1_000_000_004_u64,
-            "sessionId": "ab-terminal",
-            "frames": [
-                { "seq": 41, "kind": "snapshot", "data": "YWJj", "cols": 120, "rows": 40 },
-                { "seq": 42, "kind": "bytes", "data": "ZA==" }
-            ]
-        }));
-
-        let Some(Incoming::TerminalSession {
-            id,
-            session_id,
-            frames,
-        }) = incoming
-        else {
-            panic!("expected terminalSession command");
-        };
-        assert_eq!(id, 1_000_000_004);
-        assert_eq!(session_id, "ab-terminal");
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].kind, TerminalFrameKind::Snapshot);
-        assert_eq!(frames[1].seq, 42);
     }
 
     #[test]

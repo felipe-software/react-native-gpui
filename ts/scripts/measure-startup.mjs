@@ -5,8 +5,6 @@
 //   node scripts/measure-startup.mjs <binary> <bundle.js> [runs]
 //   node scripts/measure-startup.mjs <binary> <bundle.js> --runs 8 --max-ms 200
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, readdirSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
 
 const positional = []
 let runs = 6
@@ -26,8 +24,6 @@ if (!bin || !bundle) {
   process.exit(1)
 }
 if (positional[2]) runs = Number(positional[2])
-stageServiceDylibs(bin)
-
 function once() {
   return new Promise((resolve) => {
     const t0 = process.hrtime.bigint()
@@ -119,33 +115,4 @@ function startupMarks(log) {
     label: match[1],
     ms: Number(match[2]),
   }))
-}
-
-function stageServiceDylibs(binary) {
-  const releaseDir = dirname(resolve(binary))
-
-  const ghostty = findDylibs(resolve(releaseDir, 'build'), 'libghostty-vt')
-  const stagedGhostty = findDylibs(releaseDir, 'libghostty-vt')
-  if (!ghostty.length && !stagedGhostty.length) {
-    throw new Error(`libghostty-vt dylib not found under ${resolve(releaseDir, 'build')} or ${releaseDir}`)
-  }
-  for (const dylib of ghostty) {
-    const destination = join(releaseDir, dylib.split('/').pop())
-    if (!existsSync(destination)) copyFileSync(dylib, destination)
-  }
-}
-
-function findDylibs(dir, prefix) {
-  if (!existsSync(dir)) return []
-  const out = []
-  const stack = [dir]
-  while (stack.length) {
-    const current = stack.pop()
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const path = join(current, entry.name)
-      if (entry.isDirectory()) stack.push(path)
-      else if (entry.name.endsWith('.dylib') && entry.name.startsWith(prefix)) out.push(path)
-    }
-  }
-  return out
 }

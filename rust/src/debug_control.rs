@@ -258,13 +258,6 @@ fn incoming_for_command(value: &Value, reply: Sender<Value>) -> Result<Incoming,
             dy: number(value, "dy").unwrap_or(0.0),
             reply,
         }),
-        "terminalPresentation" => Ok(Incoming::DebugTerminalPresentation {
-            id: value
-                .get("id")
-                .and_then(Value::as_u64)
-                .ok_or("missing id")?,
-            reply,
-        }),
         "tap" => Ok(Incoming::DebugTap {
             x: number(value, "x")?,
             y: number(value, "y")?,
