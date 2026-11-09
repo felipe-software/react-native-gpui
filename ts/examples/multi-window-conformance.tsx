@@ -6,26 +6,25 @@ import {
     Text,
     View,
     Window,
-    type ChatListHandle,
-    type ChatListMessage,
+    type ScrollViewHandle,
     type WindowCloseEvent,
 } from "../src/index";
-import { ChatWindowContent } from "./multi-window/ChatWindowContent";
 import { DialogContent } from "./multi-window/DialogContent";
 import { FixtureButton } from "./multi-window/FixtureButton";
+import { ListWindowContent } from "./multi-window/ListWindowContent";
 import { PressDragRow } from "./multi-window/PressDragRow";
-import { COLORS, log, message } from "./multi-window/shared";
+import { COLORS, log } from "./multi-window/shared";
 
 function App() {
     const [count, setCount] = useState(0);
     const [text, setText] = useState("");
     const [dialogOpen, setDialogOpen] = useState(false);
-    const [chatOpen, setChatOpen] = useState(false);
+    const [listOpen, setListOpen] = useState(false);
+    const [rows, setRows] = useState(0);
     const [popupOpen, setPopupOpen] = useState(false);
     const [clipboard, setClipboard] = useState("");
     const [appState, setAppState] = useState(AppState.currentState);
-    const chatRef = useRef<ChatListHandle | null>(null);
-    const nextMessage = useRef(0);
+    const listRef = useRef<ScrollViewHandle | null>(null);
 
     useEffect(() => {
         log("ready");
@@ -37,11 +36,8 @@ function App() {
         return () => subscription.remove();
     }, []);
 
-    const appendMessages = (amount: number) => {
-        const batch: ChatListMessage[] = [];
-        for (let index = 0; index < amount; index++) batch.push(message(nextMessage.current++));
-        chatRef.current?.append(batch);
-        log("appended", { total: nextMessage.current });
+    const appendRows = (amount: number) => {
+        setRows((value) => value + amount);
     };
 
     const closeDialog = (event?: WindowCloseEvent) => {
@@ -62,9 +58,9 @@ function App() {
             <Text testID="main-app-state" style={{ color: COLORS.text, fontSize: 14 }}>{`app: ${appState}`}</Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 10 }}>
                 <FixtureButton testID="open-dialog" label="Dialog" onPress={() => setDialogOpen(true)} />
-                <FixtureButton testID="open-chat" label="Chat window" onPress={() => setChatOpen(true)} />
+                <FixtureButton testID="open-list" label="List window" onPress={() => setListOpen(true)} />
                 <FixtureButton testID="open-popup" label="Popup" onPress={() => setPopupOpen(true)} />
-                <FixtureButton testID="append" label="Append" onPress={() => appendMessages(5)} />
+                <FixtureButton testID="append" label="Append" onPress={() => appendRows(5)} />
                 <FixtureButton testID="increment" label="Increment" onPress={() => setCount((value) => value + 1)} />
                 <FixtureButton
                     testID="read-clipboard"
@@ -76,16 +72,14 @@ function App() {
                         });
                     }}
                 />
-                <FixtureButton testID="chat-top" label="Top" onPress={() => chatRef.current?.scrollToTop()} />
-                <FixtureButton testID="chat-reveal" label="Reveal m-3" onPress={() => chatRef.current?.scrollToMessage("m-3", { align: "top" })} />
-                <FixtureButton testID="chat-page-up" label="Page up" onPress={() => chatRef.current?.pageUp()} />
-                <FixtureButton testID="chat-page-down" label="Page down" onPress={() => chatRef.current?.pageDown()} />
+                <FixtureButton testID="list-top" label="Top" onPress={() => listRef.current?.scrollTo({ y: 0 })} />
+                <FixtureButton testID="list-end" label="End" onPress={() => listRef.current?.scrollToEnd()} />
                 <FixtureButton
                     testID="close-all"
                     label="Close all"
                     onPress={() => {
                         setDialogOpen(false);
-                        setChatOpen(false);
+                        setListOpen(false);
                         setPopupOpen(false);
                     }}
                 />
@@ -131,20 +125,20 @@ function App() {
                     />
                 </Window>
             ) : null}
-            {chatOpen ? (
+            {listOpen ? (
                 <Window
-                    testID="fixture-chat"
+                    testID="fixture-list"
                     kind="normal"
-                    title="Fixture Chat"
+                    title="Fixture List"
                     width={420}
                     height={300}
                     position={{ x: 40, y: 40 }}
                     onClose={(event) => {
-                        log("chatClose", { reason: event.reason });
-                        setChatOpen(false);
+                        log("listClose", { reason: event.reason });
+                        setListOpen(false);
                     }}
                 >
-                    <ChatWindowContent chatRef={chatRef} count={count} />
+                    <ListWindowContent listRef={listRef} count={count} rows={rows} />
                 </Window>
             ) : null}
             {popupOpen ? (

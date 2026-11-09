@@ -56,6 +56,12 @@ fn owner_name() -> String {
         .unwrap_or_else(|| "rngpui-service".to_string())
 }
 
+fn process_name() -> String {
+    std::fs::read_to_string("/proc/self/comm")
+        .map(|name| name.trim().to_string())
+        .unwrap_or_else(|_| "rngpui-service".to_string())
+}
+
 fn write_record(window: &Window) {
     let title = TITLE
         .get()
@@ -81,6 +87,7 @@ fn write_record(window: &Window) {
         "display": crate::linux_display::backend_name(),
         "capture": capture_enabled(),
         "rngpui": true,
+        "process": process_name(),
     });
     write_json(record_path(), &record);
 }
@@ -118,6 +125,7 @@ pub fn publish_secondary(window_id: u64, window: &Window, title: &str, kind: &st
         "capture": capture_enabled(),
         "capture_request": secondary_capture_request_path(window_id),
         "rngpui": true,
+        "process": process_name(),
     });
     write_json(secondary_record_path(window_id), &record);
 }

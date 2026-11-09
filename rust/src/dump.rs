@@ -138,11 +138,11 @@ fn dump_node(el: &Arc<ReactElement>) -> Value {
     }
 
     let mut children: Vec<Value> = el.children.iter().map(dump_node).collect();
-    if el.element_type == crate::elements::chat_list::ELEMENT_TYPE
-        && let Some((summary, rows)) = crate::elements::chat_list::dump(el.global_id)
+    if let Some(kind) = el.native_kind()
+        && let Some(native) = crate::native_element::dump(kind, el.global_id)
     {
-        obj.insert("chatList".into(), summary);
-        children.extend(rows);
+        obj.insert("nativeState".into(), native.state);
+        children.extend(native.children);
     }
     if !children.is_empty() {
         obj.insert("children".into(), json!(children));

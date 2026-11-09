@@ -356,41 +356,59 @@ const PROP_TO_EVENT: Record<string, string> = {
     onDrop: "drop",
     onKeyUp: "keyUp",
     onAuxClick: "auxClick",
-    onChatListPress: "chatListPress",
-    onChatListHover: "chatListHover",
-    onChatListScroll: "chatListScroll",
 };
 const EVENT_PROP_PAIRS = Object.entries(PROP_TO_EVENT);
-const CHAT_LIST_EVENTS = new Set(["chatListPress", "chatListHover", "chatListScroll"]);
-const CHAT_LIST_COLOR_PROPS = [
-    "textColor",
-    "mutedColor",
-    "linkColor",
-    "selectionColor",
-    "separatorColor",
-    "alternateBackground",
-    "scrollbarColor",
-] as const;
-const CHAT_LIST_NUMBER_PROPS = ["fontSize", "disabledOpacity", "historicalOpacity", "emoteScale", "maxMessages"] as const;
-const CHAT_LIST_BOOLEAN_PROPS = ["showTimestamps", "animateEmotes", "pauseOnHover"] as const;
 
-function serializeChatListOptions(props: Record<string, unknown>): Record<string, unknown> {
-    const options: Record<string, unknown> = {};
-    for (const key of CHAT_LIST_COLOR_PROPS) {
-        const color = props[key] == null ? undefined : cssColorString(resolveColorValue(props[key]));
-        if (color) options[key] = color;
+export type NativePropKind = "string" | "number" | "boolean" | "color";
+
+export type NativeComponentConfig = {
+    type: string;
+    props?: Record<string, NativePropKind>;
+    events?: Record<string, string>;
+};
+
+type NativeComponentSpec = {
+    type: string;
+    props: Array<[string, NativePropKind]>;
+    eventProps: Map<string, string>;
+    events: Set<string>;
+};
+
+const NATIVE_HOST_PREFIX = "native:";
+const nativeComponents = new Map<string, NativeComponentSpec>();
+
+export function registerNativeComponent(config: NativeComponentConfig): string {
+    const hostType = `${NATIVE_HOST_PREFIX}${config.type}`;
+    const eventProps = new Map(Object.entries(config.events ?? {}));
+    nativeComponents.set(hostType, {
+        type: config.type,
+        props: Object.entries(config.props ?? {}),
+        eventProps,
+        events: new Set(eventProps.values()),
+    });
+    return hostType;
+}
+
+function nativePropValue(kind: NativePropKind, props: Record<string, unknown>, key: string): unknown {
+    if (kind === "number") return numberProp(props, key);
+    if (kind === "boolean") return boolProp(props, key);
+    if (kind === "string") return stringProp(props, key);
+    if (props[key] == null) return undefined;
+    return cssColorString(resolveColorValue(props[key])) || undefined;
+}
+
+function serializeNativeProps(spec: NativeComponentSpec, props: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [key, kind] of spec.props) {
+        const value = nativePropValue(kind, props, key);
+        if (value !== undefined) out[key] = value;
     }
-    for (const key of CHAT_LIST_NUMBER_PROPS) {
-        const value = numberProp(props, key);
-        if (value != null) options[key] = value;
-    }
-    for (const key of CHAT_LIST_BOOLEAN_PROPS) {
-        const value = boolProp(props, key);
-        if (value != null) options[key] = value;
-    }
-    const fontFamily = stringProp(props, "fontFamily");
-    if (fontFamily) options.fontFamily = fontFamily;
-    return options;
+    return out;
+}
+
+function isNativeComponentEvent(id: number, event: string): boolean {
+    const type = instances.get(id)?.type;
+    return type !== undefined && (nativeComponents.get(type)?.events.has(event) ?? false);
 }
 type HandlerEntry = { callbacks: Record<string, Function>; eventNames: string[] };
 const handlers = new Map<number, HandlerEntry>();
@@ -427,15 +445,22 @@ export function setPseudoEvents(id: number, on: boolean): void {
     requestRecommit();
 }
 
-function registerHandlers(id: number, props: Record<string, unknown>) {
+function addHandler(map: Record<string, Function>, eventNames: string[], handler: unknown, event: string) {
+    if (typeof handler !== "function") return;
+    if (!map[event]) eventNames.push(event);
+    map[event] = chainHandler(map[event], handler);
+}
+
+function registerHandlers(id: number, type: string, props: Record<string, unknown>) {
     const map: Record<string, Function> = {};
     const eventNames: string[] = [];
+    const nativeEventProps = nativeComponents.size > 0 ? nativeComponents.get(type)?.eventProps : undefined;
     for (const [prop, event] of EVENT_PROP_PAIRS) {
-        const next = props[prop];
-        if (typeof next === "function") {
-            if (!map[event]) eventNames.push(event);
-            map[event] = chainHandler(map[event], next);
-        }
+        if (nativeEventProps?.has(prop)) continue;
+        addHandler(map, eventNames, props[prop], event);
+    }
+    if (nativeEventProps) {
+        for (const [prop, event] of nativeEventProps) addHandler(map, eventNames, props[prop], event);
     }
     // hoverStyle/pressStyle are consumed by the styling layer (Tamagui) through the platform
     // driver, not wired as JS mouse handlers here. Only the user's own onHoverIn/onPressIn/etc.
@@ -481,7 +506,7 @@ export function dispatchEvent(
         rows?: number;
         oldLine?: number;
         newLine?: number;
-        chat?: unknown;
+        nativeEvent?: unknown;
     },
 ) {
     if (event === "changeText" && typeof payload.eventCount === "number") {
@@ -522,7 +547,7 @@ export function dispatchEvent(
         }
         result = fn({ nativeEvent: { paths } });
     }
-    else if (CHAT_LIST_EVENTS.has(event)) result = fn({ nativeEvent: payload.chat ?? null });
+    else if (isNativeComponentEvent(id, event)) result = fn({ nativeEvent: payload.nativeEvent ?? null });
     else result = fn(createEvent(event, payload));
 
     if (result && typeof (result as Promise<unknown>).catch === "function") {
@@ -1349,10 +1374,6 @@ function serialize(inst: Instance | TextInstance, context: PortalContext, inheri
             if (topFadeStart != null) node.systemTopFadeStart = topFadeStart;
             break;
         }
-        case "ChatList":
-            node.type = "chatlist";
-            node.chatList = serializeChatListOptions(props);
-            break;
         case "Diff": {
             node.type = "diff";
             node.text = typeof props.patch === "string" ? props.patch : "";
@@ -1379,8 +1400,15 @@ function serialize(inst: Instance | TextInstance, context: PortalContext, inheri
         case PORTAL_HOST_TYPE:
             node.type = "div";
             break;
-        default:
-            node.type = "div";
+        default: {
+            const native = nativeComponents.get(inst.type);
+            if (native) {
+                node.type = native.type;
+                node.nativeProps = serializeNativeProps(native, props);
+            } else {
+                node.type = "div";
+            }
+        }
     }
 
     if (Object.keys(style).length) node.style = style;
@@ -1554,7 +1582,7 @@ const hostConfig: any = {
     createInstance(type: string, props: Record<string, unknown>): Instance {
         if (TRACK_COMMIT) creates++;
         const inst = createPublicInstance(type, props);
-        registerHandlers(inst.id, props);
+        registerHandlers(inst.id, type, props);
         return inst;
     },
     createTextInstance(text: string): TextInstance {
@@ -1616,7 +1644,7 @@ const hostConfig: any = {
             !sameSerializedValue(nextStyle, instance.cached.style) ||
             !sameHostPropsExceptStyle(instance.props, nextProps);
         instance.props = nextProps;
-        registerHandlers(instance.id, nextProps);
+        registerHandlers(instance.id, instance.type, nextProps);
         if (outputChanged) {
             instance.preparedStyle = nextStyle;
             instance.hasPreparedStyle = true;

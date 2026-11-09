@@ -122,7 +122,8 @@ fake sound/notification sinks, a copied `sleep` as the probe process),
 ## HTTP: image client, disk cache, fetch cache modes (2026-11-08)
 
 - **Image client.** `rust/src/http.rs` (`AppHttpClient`) is the GPUI `HttpClient` behind
-  `ImgResourceLoader`, so it serves both `<Image>` and `ChatList`. It is zed-reqwest (the build
+  `ImgResourceLoader`, so it serves `<Image>` and any native element that loads images through
+  GPUI. It is zed-reqwest (the build
   `gpui_http_client` already compiles, so no new crates) on a current-thread tokio runtime on the
   `rngpui-net` thread, HTTP/2 through ALPN with one pooled connection per host. The old pool was
   6 blocking ureq workers on HTTP/1.1, which paid a round trip per image per connection.
@@ -161,15 +162,15 @@ fake sound/notification sinks, a copied `sleep` as the probe process),
 - **`ImageCache.prefetch(urls)`** (`rust/src/image_prefetch.rs`) calls
   `cx.fetch_asset::<ImgResourceLoader>` on the main thread, so the first paint finds the image
   downloaded and decoded; the promise resolves through a `{"type":"imagePrefetch"}` bridge event.
-  The ChatList image map adopts a prefetched URL when it paints it; unadopted ones are dropped
-  from GPUI's asset cache after 5 minutes.
+  A native element that paints a prefetched URL adopts it (`adopt_prefetched_image`) and drives
+  the sweep (`sweep_prefetched_images`); unadopted ones are dropped from GPUI's asset cache after
+  5 minutes. Images a native element holds (`NativeElement::holds_image`) are not tracked.
 - **Decoding is not the bottleneck.** GPUI decodes every GIF/WebP frame before the first can
   paint; measured with image 0.25.10, 1x emotes (up to 158 frames) take at most 5 ms and the first
   frame under 0.2 ms, 3x/4x tooltip images about 28 ms. GPUI's loader was left as it is.
 - **Debugging**: `RNGPUI_HTTP_TRACE=1` prints `[rngpui-http] {url, source: network|cache|
-  revalidate, status, startMs, endMs, bytes}` per image request. `chatListState` takes
-  `images: true` (per-list `visibleImages` with state, `visibleIds`, and `visibleHistorical`) and
-  `timings: true` (`imageTimings`: requested, settled and first-painted wall-clock ms per URL).
+  revalidate, status, startMs, endMs, bytes}` per image request. chatterino-gpui's chat list
+  registers a `chatListState` debug command with per-image state and timings.
 - **Timing harness**: `scripts/emote-timing.mjs` in
   [chatterino-gpui](https://github.com/felipe-software/chatterino-gpui) times cold and warm
   launches of that app and of the Flatpak Chatterino 2.5.5 (Xvfb `:98`, logs via
@@ -200,7 +201,8 @@ delta wire, lifecycle commands).
   that serialized the main tree, so it pushes its own first tree right after the open
   command. The host still holds a tree that arrives before its window (`PENDING_TREES`).
   Unmount sends `windowClose`; the host drops the window, its input entities, webviews,
-  pointer spans, GIF wakes and registry files, then re-runs the union retain.
+  pointer spans, native elements' window state (`NativeElement::forget_window`) and registry
+  files, then re-runs the union retain.
 - **Every window is a `ServiceApp`** (`window_id`, `role`, `chrome`). Main-only work stays
   main-only: the paint-only / incremental flags, `anim_trace` frame counter (`get frames`),
   frame_trace, inspector, perf HUD, AX sync, startup marks and the main registry record.
@@ -209,12 +211,12 @@ delta wire, lifecycle commands).
 - **Per-window state that used to be global**: pointer spans (`div::with_pointer_frame`,
   keyed by GPUI window id — a mouse event must be resolved against its own window's last
   frame, not whichever window painted after it), macOS hit passthrough rects (keyed by
-  GPUIView), input entities and webviews (published per owner), ChatList GIF wakes.
-  Id-keyed state (scroll, chat lists, layout cache, tweens) stays global because globalIds
+  GPUIView), input entities and webviews (published per owner).
+  Id-keyed state (scroll, native elements, layout cache, tweens) stays global because globalIds
   are unique, but **retain must use the union of every window's tree**
   (`windows::retain_all_with`); retaining one window's ids drops the others' state.
 - **The pump** unwraps `Incoming::ForWindow` (debug requests with `"window": <id>`) and routes
-  node commands (`focusInput`, `chatList`, `scrollTo`, `eval`, …) to the window that owns
+  node commands (`focusInput`, `nativeCommand`, `scrollTo`, `eval`, …) to the window that owns
   the node. Window-update failures go through `window_gone!()`: a closed secondary window
   skips the message, only the main window closing stops the pump. `SetNodeStyle` and tween
   ticks repaint only the windows that own the animated nodes.
@@ -242,10 +244,10 @@ delta wire, lifecycle commands).
   `<pid>.w<id>.json` (with `secondary: true`, `windowId`, `capture_request`) and answers
   `<pid>.w<id>.capture`; continuous `RNGPUI_CAPTURE_PNG` also writes `<name>.window-<id>.png`.
 
-Gate: `bun run conformance:multi-window` (47 checks, Linux: it captures through the
+Gate: `bun run conformance:multi-window` (42 checks, Linux: it captures through the
 registry's per-window request files). It also covers `NativeClipboard.read`, `AppState`,
-modifier-only keys, `onAuxClick`, `transparent`, `nativePressDrag={false}` and the ChatList
-scroll API. Not done: macOS capture of secondary windows is unvalidated, AX children of
+modifier-only keys, `onAuxClick`, `transparent`, `nativePressDrag={false}` and `scrollTo` /
+`scrollToEnd` and pointer events routed to a `ScrollView` in a second window. Not done: macOS capture of secondary windows is unvalidated, AX children of
 secondary windows are not synced, and WebView inside a secondary window is untested.
 
 Small fixes landed alongside: `NativeLayout` overrides now clear the paint-only flag (a
@@ -530,63 +532,42 @@ Known gaps (spike follow-ups): native controls aren't in the AX tree because gpu
 native controls need explicit `style` sizing; Windows/Linux backends are unimplemented (the
 TS API is platform-agnostic; only the per-OS Rust element backend differs).
 
-## Native chat list: `<ChatList>` (2026-11-08)
+## Native elements from apps: `NativeElement` (2026-11-09)
 
-A virtualized Twitch-style message log drawn entirely by one native element, written for
-[chatterino-gpui](https://github.com/felipe-software/chatterino-gpui). TS: `ts/src/ChatList.tsx`
-(forwardRef + `ChatListHandle`), contract in `ts/src/chat-list-types.ts`, host type `chatlist`. Rust: `rust/src/elements/chat_list/`
-(`model` parsing, `layout` per-message layout, `state` buffer/scroll/selection, `element`
-gpui Element, `images` loading + animation clock, `events`, `debug` dump/tap).
+The library ships no app-specific elements. An app adds one by implementing
+`react_native_gpui::native_element::NativeElement` (rust/src/native_element.rs) and building its
+own service binary with `react_native_gpui::run(vec![Box::new(MyElement)])`; the stock
+`rngpui-service` (rust/src/bin/rngpui-service.rs) runs `run(Vec::new())`. TS side:
+`defineNativeComponent`, `useNativeElement` and `sendNativeCommand` (ts/src/native-component.ts),
+with the registry and serializer in ts/src/reconciler.ts. The reference element is
+chatterino-gpui's chat log (`native/src/chat_list/` and `src/native/chatList/` there, which owns
+its docs, conformance and perf gates).
 
-- **Data never rides the React tree.** Props carry only options and colors
-  (`SpecializedElement::ChatList`, paint-only for the retained-layout gate). Messages go
-  through `$cmd: "chatList"` (`append|prepend|update|clear|scrollToBottom`), parsed on the
-  `jsc-tree-parser` thread into structs, then applied on the main thread to a thread-local
-  `ListState` keyed by the `__rngpuiHostId`. An append arms a paint-only frame and lays out
-  only the new message; state is dropped by `TreeMetadata::retain_native_state`.
-- **Scroll position is a message anchor, not a pixel offset**: `(seq, px into that
-  message)`. Appends get increasing seqs and prepends decreasing ones, so the deque stays
-  contiguous and `index = seq - front.seq`. That is why append, prepend and `maxMessages`
-  trimming do not move a scrolled-up view, and why the scrollbar counts messages (Chatterino's
-  thumb math: `y = rel/n·(h−11)+1`, `height = page/n·(h−11)+10`).
-- **Paint inside `window.paint_layer`.** gpui inserts every primitive painted outside a
-  layer into the scene's BoundsTree; `paint_line` avoids that with one layer per line. The
-  first version called `paint_glyph` per glyph with no layer and paint cost 3.3 ms/frame for
-  ~7k glyphs; three layers per list (content, zero-width overlays, selection + scrollbar) cut
-  it to ~1 ms. Inside one layer sprites sort by atlas tile id, not insertion order, which is
-  why zero-width emotes get their own layer.
-- **Never call `div::pointer_reaches` during prepaint.** Spans painted after you are not
-  registered yet, and its per-position memo (`FRONT_MOST`) caches the wrong answer for the
-  rest of the frame, breaking every later element. The chat list records `pointer_inside`
-  from its mouse handlers and reads that in prepaint.
-- **Animation**: images load with `cx.fetch_asset::<ImgResourceLoader>` (shared with
-  `<Image>` and `ImageCache.prefetch`, through the HTTP/2 client and disk cache), and a load
-  completion arms a paint-only refresh instead of notifying the root.
-  Frame index comes from one global epoch (all copies in sync, delays ≤10 ms play as 100 ms,
-  minimum 20 ms, like Chatterino). Only painted emotes compute a deadline, and
-  `images::request_wake` keeps a single timer for the earliest one, so a visible 200 ms GIF
-  repaints at 5 fps and a list with no visible animation never repaints.
-- **Copy is routed at the root frame, not by focusing the list** (Chatterino hands focus to
-  the input): a capture-phase `Copy` action copies the chat selection unless the focused
-  `TextInput` holds a newer selection (`input_selection_at` vs
-  `chat_list::selection_changed_at`), and a root `on_key_down` handles secondary-c when no
-  input is focused. On Wayland gpui writes the clipboard only while the window has pointer or
-  keyboard focus, so a no-activate headless test window never gets it; the `clipboard` debug
-  command also returns `lastCopy`, the text the app last tried to copy.
-- **Debugging**: `get tree`/`get stats` show one synthetic node per visible message
-  (`chatlist-message`, `nativeID` = message id) with children `chatlist-user|text|link|emote|
-  badge|timestamp|reply-curve` and window-space bounds; ids are negative and stable per
-  visible row. The `chatlist` node carries a `chatList` summary (counts, scroll state,
-  selection, image and wake counters). `do tap` resolves the list with
-  `inspector::tap_target_at` and runs the list's own hit test (`chat_list::debug_tap`), so it
-  agrees with `realtap`. Debug socket commands: `chatListState`, `realscroll` (a real
-  ScrollWheel event), `clipboard`; `scrollAt` routes to a chat list under the point.
-- **Gates**: `bun run conformance:chat-list` (51 checks: wrapping, compact-emote alignment,
-  zero-width overlay pixels, timestamp color, GIF cadence, realtap vs tap, an interactive
-  overlay occluding the list, hover bounds, underline, drag selection + copy,
-  append/prepend/trim anchoring, pause on hover, thumb drag, idle no-repaint). `bun run perf:chat-list [--seconds 10] [--warmup 4]
-  [--max-main-cpu 15] [--json]` (Linux, reads `/proc/<pid>/task`) runs
-  `examples/chat-list-stress.tsx`; tune it with `CHAT_STRESS_LISTS`, `CHAT_STRESS_PREFILL`,
-  `CHAT_STRESS_RATE`, `CHAT_STRESS_ANIMATED_EVERY`, `CHAT_STRESS_ANIMATE=0`. On this machine,
-  headless Mutter, 6 lists × 1000 messages: 20 msg/s with 11 visible GIFs = 7.8% of one core
-  on the main thread at 24 frames/s; GIFs only = 2.0% at 5 frames/s; idle = 0.1 frames/s.
+- **Crate layout.** `rust/src/service.rs` is the `[lib]` root (`react_native_gpui`) and `run()`
+  is the old `main`. `native_element` is the only public module and re-exports exactly what an
+  element needs (`ReactElement`, `report_layout`, `bounds_have_drawable_area`, the pointer-span
+  helpers, `overflow_clip_radii`, `arm_paint_only_frame`, `clear_text_selection`, the prefetch
+  adopt/sweep, `parse_css_color`, `map_font_family`, `hsla_to_hex`). Widen that facade rather
+  than making modules public.
+- **Registry.** `run` installs the elements in a `OnceLock` before any thread starts; a kind is
+  its index. A type that collides with a built-in element type, or is registered twice, panics
+  at startup. With no elements every lookup is an empty slice, so the stock binary pays nothing.
+- **Wire.** A node of a registered type carries `nativeProps`, parsed by `parse_props` on the
+  tree-parser thread into `SpecializedElement::Native { kind, props }` (`NativeProps` compares by
+  the props' `PartialEq`). Commands are `{ $cmd: "nativeCommand", type, id, name, args }`:
+  `parse_command` on the parser thread, routed to the window that owns `id`, `apply_command` on
+  the main thread, then `cx.notify()`. A command that cannot move a layout box arms the
+  paint-only frame itself. Events leave through `emit_event` as
+  `{ type: "event", id, event, nativeEvent }`; the reconciler hands `{ nativeEvent }` to the
+  handler prop the component declared. React host types are namespaced (`native:<type>`) so
+  they can never shadow `View` and friends.
+- **Hooks**, each replacing a former chat-list special case: `props_change_is_paint_only`
+  (retained-layout gate), `retain` (the TreeMetadata union across windows), `forget_window`
+  (window close), `selected_text` / `selection_changed_at` / `clear_selection` (Ctrl+C routing at
+  the root frame and `<Text selectable>` drags), `holds_image` (prefetch bookkeeping),
+  `handles_pointer` + `debug_tap` (`do tap` agrees with `realtap`), `scroll_by` (`scrollAt`),
+  `dump` (state under `nativeState` plus synthetic child rows in `get tree`), and
+  `debug_commands` / `debug_command` (named debug-socket commands answered on the main thread).
+- **Linux window registry** records carry `process` (the service's `/proc/self/comm`), and
+  `conformance-utils.listWindows()` matches it, so captures and `--attach` work for app
+  binaries, not only for processes named `rngpui-service`.

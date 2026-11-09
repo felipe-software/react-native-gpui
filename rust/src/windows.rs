@@ -785,7 +785,7 @@ pub(crate) fn close(id: u64, cx: &mut App) {
     crate::elements::input::forget_owner(id);
     crate::elements::webview::forget_owner(id);
     crate::elements::forget_pointer_window(window.gpui_id);
-    crate::elements::chat_list::forget_window(window.gpui_id);
+    crate::native_element::forget_window(window.gpui_id);
     crate::hit_passthrough::forget_view(window.view);
     #[cfg(target_os = "linux")]
     crate::linux_window_registry::remove_secondary(id);

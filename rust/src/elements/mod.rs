@@ -1,4 +1,3 @@
-pub mod chat_list;
 mod diff;
 mod div;
 mod image;
@@ -10,7 +9,6 @@ pub mod system;
 mod text;
 pub mod webview;
 
-pub use chat_list::ReactChatListElement;
 pub use diff::{DiffPayload, ReactDiffElement, retain_diff_state, scroll_diff_by};
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use div::{
@@ -21,6 +19,7 @@ pub use div::{
     set_native_layout_override, stacked_child_indices_for, synth_drag_end, synth_drag_move,
     synth_drag_start, synth_tap,
 };
+pub use div::{close_pointer_span, open_pointer_span, overflow_clip_radii, pointer_reaches};
 #[cfg(not(target_os = "macos"))]
 pub use div::{scroll_by, scroll_offset};
 pub use image::ReactImageElement;
@@ -188,7 +187,7 @@ pub enum SpecializedElement {
     Input(InputPayload),
     NativeControl(InputPayload),
     Diff(DiffPayload),
-    ChatList(chat_list::ChatListOptions),
+    Native(crate::native_element::NativePayload),
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -208,7 +207,7 @@ pub struct ReactElement {
     pub cached_text: gpui::SharedString,
     /// type-specific retained data. An ordinary view carries one empty pointer-sized
     /// option instead of storage for input, native-surface, image, and diff data.
-    pub specialized: Option<Arc<SpecializedElement>>,
+    pub(crate) specialized: Option<Arc<SpecializedElement>>,
     /// optional view-only compositor effects. Allocated inline because these two values
     /// are small and can combine with every host kind.
     pub view_effects: ViewEffects,
@@ -352,9 +351,16 @@ impl ReactElement {
         }
     }
 
-    pub fn chat_list_options(&self) -> Option<&chat_list::ChatListOptions> {
+    pub fn native_props<T: 'static>(&self) -> Option<&T> {
         match self.specialized.as_deref() {
-            Some(SpecializedElement::ChatList(options)) => Some(options),
+            Some(SpecializedElement::Native(payload)) => payload.props.get(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native_kind(&self) -> Option<usize> {
+        match self.specialized.as_deref() {
+            Some(SpecializedElement::Native(payload)) => Some(payload.kind),
             _ => None,
         }
     }
@@ -620,7 +626,9 @@ pub fn is_paint_only_tree_update(previous: &Arc<ReactElement>, next: &Arc<ReactE
 
 fn specialized_change_is_paint_only(previous: &ReactElement, next: &ReactElement) -> bool {
     match (previous.specialized.as_deref(), next.specialized.as_deref()) {
-        (Some(SpecializedElement::ChatList(_)), Some(SpecializedElement::ChatList(_))) => true,
+        (Some(SpecializedElement::Native(previous)), Some(SpecializedElement::Native(next))) => {
+            crate::native_element::props_change_is_paint_only(previous, next)
+        }
         (Some(SpecializedElement::Diff(previous)), Some(SpecializedElement::Diff(next))) => {
             previous.row_count() == next.row_count() && previous.diff_scroll == next.diff_scroll
         }
@@ -706,8 +714,10 @@ pub fn create_element(element: Arc<ReactElement>, window_id: u64) -> AnyElement 
             ReactNativeControlElement::new(element).into_any_element()
         }
         "diff" => ReactDiffElement::new(element).into_any_element(),
-        chat_list::ELEMENT_TYPE => ReactChatListElement::new(element).into_any_element(),
-        _ => ReactDivElement::new(element, window_id).into_element(),
+        _ => match element.native_kind() {
+            Some(kind) => crate::native_element::render(kind, element, window_id),
+            None => ReactDivElement::new(element, window_id).into_element(),
+        },
     }
 }
 

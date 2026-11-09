@@ -63,7 +63,7 @@ try {
     const baselineNodes = countNodes(baseline);
     check("only the main window at start", (await windows()).length === 1);
     await checkDialog();
-    await checkChatWindow();
+    await checkListWindow();
     await checkPopup();
     await checkUnmountClosesEverything(baselineNodes);
     await checkClipboardAndAppState();
@@ -133,66 +133,61 @@ async function checkDialog() {
     check("the closed window leaves the registry", !registryRecord(dialog.id));
 }
 
-async function checkChatWindow() {
-    await tapNode(0, "open-chat");
-    const chat = await waitForWindow("fixture-chat");
-    check("a normal window opens", chat.kind === "normal", JSON.stringify(chat));
+async function checkListWindow() {
+    await tapNode(0, "open-list");
+    const list = await waitForWindow("fixture-list");
+    check("a normal window opens", list.kind === "normal", JSON.stringify(list));
     for (let index = 0; index < 4; index++) await tapNode(0, "append");
-    await waitFor(async () => (await chatState())?.messages === 20, 4000, "20 chat messages");
-    await waitFor(async () => listNodes(await dump(chat.id), "chatlist-message").length >= 6, 4000, "laid-out chat rows");
-    const tree = await dump(chat.id);
-    const rows = listNodes(tree, "chatlist-message");
-    check("ChatList lays out in the second window", rows.length >= 6, `${rows.length} visible rows`);
-    const user = listNodes(tree, "chatlist-user").at(-1);
-    const png = capture(chat.id, "chat");
-    const userColor = closestInRect(png, user.bounds, "#ff7f50");
-    check("ChatList paints in the second window", userColor < 40, `closest ${userColor.toFixed(1)} to the user color`);
-    check("ChatList follows the newest message", (await chatState()).lastMessageId === "m-19" && (await chatState()).following);
+    await waitFor(async () => findNode(await dump(list.id), "row-19"), 4000, "20 list rows");
+    const tree = await dump(list.id);
+    const scroller = findNode(tree, "window-list");
+    const visible = rowNodes(tree).filter((row) => row.bounds && within(row.bounds, scroller.bounds));
+    check("a ScrollView lays out in the second window", visible.length >= 6, `${visible.length} visible rows`);
+    const png = capture(list.id, "list");
+    const rowColor = closestInRect(png, visible.at(-1).bounds, "#ff7f50");
+    check("the second window paints its rows", rowColor < 40, `closest ${rowColor.toFixed(1)} to the row color`);
 
-    await tapNode(0, "chat-top");
-    await waitFor(async () => (await chatState())?.anchor?.messageId === "m-0", 3000, "scrollToTop");
-    check("scrollToTop shows the oldest message and stops following", !(await chatState()).following);
-    await tapNode(0, "chat-reveal");
-    await waitFor(async () => (await chatState())?.anchor?.messageId === "m-3", 3000, "scrollToMessage");
-    check("scrollToMessage(id, top) puts the message at the top", true);
-    await tapNode(0, "chat-page-down");
-    await waitFor(async () => messageIndex((await chatState())?.anchor?.messageId) > 3, 3000, "page down");
-    const paged = messageIndex((await chatState()).anchor.messageId);
-    check("pageDown scrolls one viewport down", paged >= 9, `anchor m-${paged}`);
-    await tapNode(0, "chat-page-up");
-    await waitFor(async () => messageIndex((await chatState())?.anchor?.messageId) < paged, 3000, "page up");
-    check("pageUp scrolls back up", messageIndex((await chatState()).anchor.messageId) <= 3, (await chatState()).anchor.messageId);
+    await tapNode(0, "list-end");
+    await waitFor(async () => {
+        const current = await dump(list.id);
+        return within(findNode(current, "row-19").bounds, findNode(current, "window-list").bounds);
+    }, 3000, "scrollToEnd");
+    check("scrollToEnd from the main window scrolls the second window's ScrollView", true);
+    await tapNode(0, "list-top");
+    await waitFor(async () => {
+        const current = await dump(list.id);
+        return near(findNode(current, "row-0").bounds.y, findNode(current, "window-list").bounds.y);
+    }, 3000, "scrollTo top");
+    check("scrollTo from the main window scrolls it back", true);
 
-    const scrolled = await dump(chat.id);
-    const target = listNodes(scrolled, "chatlist-user")[1];
+    const scrolled = await dump(list.id);
+    const target = findNode(scrolled, "row-1");
     const point = center(target);
     let since = output.length;
-    await request({ $cmd: "realmove", ...point, window: chat.id });
-    const hover = await waitForEvent("chatHover", since, (event) => event.target === "user");
+    await request({ $cmd: "realmove", ...point, window: list.id });
+    const move = await waitForEvent("rowMove", since, (event) => event.index === 1);
     check(
-        "onHover carries the pointer position",
-        near(hover.pointerX, point.x) && near(hover.pointerY, point.y),
-        `${hover.pointerX},${hover.pointerY} vs ${point.x},${point.y}`,
+        "onMouseMove carries the pointer position in the second window",
+        near(move.x, point.x) && near(move.y, point.y),
+        `${move.x},${move.y} vs ${point.x},${point.y}`,
     );
     since = output.length;
-    await request({ $cmd: "realtap", ...point, modifiers: ["control"], window: chat.id });
-    const press = await waitForEvent("chatPress", since, () => true);
-    check("onPress carries the modifier keys", press.ctrlKey === true && press.shiftKey === false, JSON.stringify(press));
+    await request({ $cmd: "realtap", ...point, modifiers: ["control"], window: list.id });
+    const down = await waitForEvent("rowDown", since, () => true);
+    check("onMouseDown carries the modifier keys", down.ctrlKey === true && down.shiftKey === false, JSON.stringify(down));
 
     since = output.length;
-    const hasTitleBar = chat.bounds.outerHeight - chat.bounds.height > 30;
+    const hasTitleBar = list.bounds.outerHeight - list.bounds.height > 30;
     if (hasTitleBar) {
-        const close = { x: chat.bounds.outerWidth - 12 - 17, y: 12 + 17 };
-        const tap = await request({ $cmd: "realtap", ...close, window: chat.id });
+        const close = { x: list.bounds.outerWidth - 12 - 17, y: 12 + 17 };
+        const tap = await request({ $cmd: "realtap", ...close, window: list.id });
         check("the title bar's close button takes a real click", tap.ok && tap.handlerFired, JSON.stringify(tap));
     } else {
-        await request({ $cmd: "systemClose", window: chat.id });
+        await request({ $cmd: "systemClose", window: list.id });
     }
-    await waitForEvent("chatClose", since, (event) => event.reason === "system");
-    await waitFor(async () => (await windows()).length === 1, 4000, "chat window closed");
+    await waitForEvent("listClose", since, (event) => event.reason === "system");
+    await waitFor(async () => (await windows()).length === 1, 4000, "list window closed");
     check("the OS close button reaches onClose", true);
-    const lists = await request({ $cmd: "chatListState" });
-    check("closing the window drops its ChatList state", lists.ok && lists.lists.length === 0, JSON.stringify(lists.lists?.length));
 }
 
 async function checkPopup() {
@@ -217,7 +212,7 @@ async function checkPopup() {
 
 async function checkUnmountClosesEverything(baselineNodes) {
     await tapNode(0, "open-dialog");
-    await tapNode(0, "open-chat");
+    await tapNode(0, "open-list");
     await waitFor(async () => (await windows()).length === 3, 4000, "two windows open");
     check("several windows can be open at once", (await windows()).length === 3);
     await tapNode(0, "close-all");
@@ -326,11 +321,6 @@ async function dump(window) {
     return response.tree;
 }
 
-async function chatState() {
-    const response = await request({ $cmd: "chatListState" });
-    return response.lists?.[0];
-}
-
 async function tapNode(window, testID) {
     const node = findNode(await dump(window), testID);
     if (!node) throw new Error(`no ${testID} in window ${window}`);
@@ -373,14 +363,19 @@ function listNodes(node, type, out = []) {
 }
 
 function countNodes(node) {
-    let count = 0;
-    const walk = (current) => {
-        if (current.type?.startsWith("chatlist-")) return;
-        count++;
-        for (const childNode of current.children ?? []) walk(childNode);
-    };
-    walk(node);
+    let count = 1;
+    for (const childNode of node.children ?? []) count += countNodes(childNode);
     return count;
+}
+
+function rowNodes(node, out = []) {
+    if (/^row-\d+$/.test(node.accessibility?.testID ?? "")) out.push(node);
+    for (const childNode of node.children ?? []) rowNodes(childNode, out);
+    return out;
+}
+
+function within(inner, outer) {
+    return inner.y >= outer.y - 0.5 && inner.y + inner.height <= outer.y + outer.height + 0.5;
 }
 
 function textOf(tree, testID) {
@@ -394,10 +389,6 @@ function textOf(tree, testID) {
     };
     walk(node);
     return texts.join("");
-}
-
-function messageIndex(id) {
-    return id ? Number(String(id).replace("m-", "")) : -1;
 }
 
 function center(node) {
