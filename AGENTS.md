@@ -301,7 +301,7 @@ versions that the script bumps in place. The checked-in `ts/package.json` has no
    `revert` → patch) and pushes the next `v<version>` tag plus a GitHub release. The first
    release is 1.0.0.
 2. The tag runs `publish-npm.yml`: a native matrix (ubuntu-24.04, ubuntu-24.04-arm,
-   macos-14) builds `rngpui-service` with `.github/actions/native-toolchain`, and
+   macos-15) builds `rngpui-service` with `.github/actions/native-toolchain`, and
    `scripts/npm-packages.mjs stage-platform` strips debug info (macOS re-signs with
    `rust/jsc.entitlements`) and writes the platform package. A second job builds `dist/`
    and runs `npm-packages.mjs set-version <tag version>`, which also writes the exact-version
