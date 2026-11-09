@@ -211,7 +211,7 @@ jobs:
                       echo "$name@$VERSION is already on npm, skipping"
                       return
                     fi
-                    npx --yes npm@11.5.1 publish "$tarball" --provenance --access public
+                    npx --yes npm@11.5.1 publish "./$tarball" --provenance --access public
                   }
 
                   for tarball in packs/felipe-software-react-native-gpui-*-*-"$VERSION".tgz; do
