@@ -1,5 +1,6 @@
 import { Platform } from "react-native-gpui";
 import type { Settings } from "../data/api";
+import { scaledPoints, uiScaleOf } from "./zoom";
 
 export type Fonts = {
     chatFamily: string;
@@ -24,9 +25,10 @@ function platformFonts(): PlatformFonts {
     return LINUX;
 }
 
-export function fontsFor(settings: Pick<Settings, "fontFamily" | "fontSize">): Fonts {
+export function fontsFor(settings: Pick<Settings, "fontFamily" | "fontSize"> & { uiScale?: number }): Fonts {
     const platform = platformFonts();
-    const chatSize = Math.round(settings.fontSize * platform.pointsToPixels * 100) / 100;
+    const points = scaledPoints(settings.fontSize, uiScaleOf(settings));
+    const chatSize = Math.round(points * platform.pointsToPixels * 100) / 100;
     return {
         chatFamily: settings.fontFamily || platform.chat,
         chatSize,

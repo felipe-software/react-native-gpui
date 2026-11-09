@@ -5,28 +5,34 @@ export const POPUP_LIMIT = 200;
 
 export type WordAtEnd = { start: number; word: string };
 
+export function wordBefore(text: string, cursor: number): WordAtEnd {
+    const head = text.slice(0, cursor);
+    const start = head.lastIndexOf(" ") + 1;
+    return { start, word: head.slice(start) };
+}
+
 export function wordAtEnd(text: string): WordAtEnd {
-    const start = text.lastIndexOf(" ") + 1;
-    return { start, word: text.slice(start) };
+    return wordBefore(text, text.length);
 }
 
 export function isFirstWord(text: string, start: number): boolean {
     return text.slice(0, start).trim().length === 0;
 }
 
-export type TabCycle = { prefix: string; candidates: Completion[]; index: number };
+export type TabCycle = { prefix: string; suffix: string; candidates: Completion[]; index: number };
 
 export function startTabCycle(
     text: string,
     complete: (word: string, atStartOfMessage: boolean) => Completion[],
     backwards = false,
+    cursor = text.length,
 ): TabCycle | undefined {
-    const { start, word } = wordAtEnd(text);
+    const { start, word } = wordBefore(text, cursor);
     if (word.length < MIN_TAB_WORD) return undefined;
     const candidates = complete(word, isFirstWord(text, start));
     if (candidates.length === 0) return undefined;
     const index = backwards ? candidates.length - 1 : 0;
-    return { prefix: text.slice(0, start), candidates, index };
+    return { prefix: text.slice(0, start), suffix: text.slice(cursor), candidates, index };
 }
 
 export function stepTabCycle(cycle: TabCycle, step: 1 | -1): TabCycle {
@@ -35,16 +41,26 @@ export function stepTabCycle(cycle: TabCycle, step: 1 | -1): TabCycle {
 }
 
 export function tabCycleText(cycle: TabCycle): string {
-    return cycle.prefix + cycle.candidates[cycle.index].text;
+    return cycle.prefix + cycle.candidates[cycle.index].text + cycle.suffix;
 }
 
-export type PopupQuery = { kind: "emote" | "user"; query: string; start: number };
+export function tabCycleCursor(cycle: TabCycle): number {
+    return cycle.prefix.length + cycle.candidates[cycle.index].text.length;
+}
 
-export function popupQuery(text: string): PopupQuery | undefined {
-    const { start, word } = wordAtEnd(text);
-    if (word.startsWith(":")) return { kind: "emote", query: word.slice(1), start };
-    if (word.startsWith("@") && word.length > 1) return { kind: "user", query: word.slice(1), start };
+export type PopupQuery = { kind: "emote" | "user"; query: string; start: number; end: number };
+
+export function popupQuery(text: string, cursor = text.length): PopupQuery | undefined {
+    const { start, word } = wordBefore(text, cursor);
+    if (word.startsWith(":")) return { kind: "emote", query: word.slice(1), start, end: cursor };
+    if (word.startsWith("@") && word.length > 1) return { kind: "user", query: word.slice(1), start, end: cursor };
     return undefined;
+}
+
+export type Replacement = { text: string; cursor: number };
+
+export function replaceRange(text: string, start: number, end: number, insertion: string): Replacement {
+    return { text: text.slice(0, start) + insertion + text.slice(end), cursor: start + insertion.length };
 }
 
 const PROVIDER_NAMES: Record<EmoteInfo["provider"], string> = {
@@ -82,7 +98,12 @@ export function filterEmotes(emotes: EmoteInfo[], rawQuery: string, limit = POPU
 }
 
 export function insertWithSpacing(text: string, insertion: string): string {
-    const needsSpace = text.length > 0 && !text.endsWith(" ");
+    return insertAt(text, text.length, insertion).text;
+}
+
+export function insertAt(text: string, cursor: number, insertion: string): Replacement {
+    const before = text.slice(0, cursor);
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
     const separator = needsSpace ? " " : "";
-    return `${text}${separator}${insertion} `;
+    return replaceRange(text, cursor, cursor, `${separator}${insertion} `);
 }

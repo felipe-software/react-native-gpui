@@ -13,17 +13,19 @@ import type { NoticeResult } from "../messages/notice";
 import { buildPrivmsg } from "../messages/privmsg";
 import { renderMessage, type RenderOptions } from "../messages/render";
 import type { MessageSink } from "../messages/sink";
+import { markSimilar } from "../messages/similarity";
 import {
     makeBannedMessage,
     makeLiveMessage,
     makeOfflineMessage,
     makeSystemMessage,
+    makeUserListMessage,
 } from "../messages/system";
 import { buildUserNotice } from "../messages/usernotice";
 import { COMMAND_NAMES } from "../twitch/commands";
 import type { FetchLike } from "../util/http";
 import { MessageBuffer, type BufferTimers } from "./buffer";
-import { ChannelEmotes, type GlobalEmoteSets } from "./channel-emotes";
+import { ChannelEmotes, visibleEmotes, type GlobalEmoteSets } from "./channel-emotes";
 
 const TWITCH_DEFAULT_COMMANDS = [
     "/help", "/w", "/me", "/disconnect", "/mods", "/vips", "/color", "/commercial", "/mod", "/unmod", "/vip",
@@ -53,8 +55,11 @@ export type ChannelDeps = {
     onMessage: (channel: ChatChannel, message: ChatMessage) => void;
     onMessageChanged: (message: ChatMessage) => void;
     loadCheermotes?: (roomId: string) => Promise<CheermoteSet[] | undefined>;
+    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap>;
     twitchEmotes: () => Emote[];
 };
+
+const JOIN_PART_MERGE_MS = 500;
 
 export class ChatChannel implements Channel, ChannelContext {
     readonly buffer: MessageBuffer;
@@ -66,6 +71,11 @@ export class ChatChannel implements Channel, ChannelContext {
     private readonly userColors = new Map<string, string>();
     private readonly threads = new Set<string>();
     private loadingHistory = false;
+    private moderator = false;
+    private readonly pendingJoins: string[] = [];
+    private readonly pendingParts: string[] = [];
+    private joinTimer: unknown;
+    private partTimer: unknown;
 
     constructor(
         readonly name: string,
@@ -84,6 +94,8 @@ export class ChatChannel implements Channel, ChannelContext {
             globalBadges: deps.globalBadges,
             systemMessage: (text) => this.addSystemMessage(text),
             loadCheermotes: deps.loadCheermotes,
+            loadBadges: deps.loadBadges,
+            settings: deps.settings,
         });
     }
 
@@ -108,12 +120,24 @@ export class ChatChannel implements Channel, ChannelContext {
     }
 
     complete(word: string, atStartOfMessage: boolean): Completion[] {
+        const settings = this.deps.settings();
+        const customTriggers = settings.commands.map((command) => command.trigger).filter((trigger) => /^[/.]/.test(trigger));
         return complete(word, atStartOfMessage, {
             emotes: () => this.completionEmotes(),
             users: () => this.completionUsers(),
-            commands: () => [...new Set([...COMMAND_NAMES, ...TWITCH_DEFAULT_COMMANDS])].sort(),
-            mentionWithComma: true,
+            commands: () => [...new Set([...COMMAND_NAMES, ...TWITCH_DEFAULT_COMMANDS, ...customTriggers])].sort(),
+            mentionWithComma: settings.mentionUsersWithComma,
+            prefixOnly: settings.prefixOnlyEmoteCompletion,
+            usersOnlyWithAt: settings.userCompletionOnlyWithAt,
         });
+    }
+
+    isModerator(): boolean {
+        return this.moderator;
+    }
+
+    isBroadcaster(): boolean {
+        return this.deps.global().selfLogin?.toLowerCase() === this.name;
     }
 
     userMessages(login: string): ChatListMessage[] {
@@ -213,9 +237,18 @@ export class ChatChannel implements Channel, ChannelContext {
     }
 
     addMessage(message: ChatMessage): void {
+        const global = this.deps.global();
+        const settings = this.deps.settings();
+        markSimilar(message, this.buffer.messages(), settings, global.selfLogin, global.now());
+        const silenced = message.flags.similar && !(settings.shownSimilarTriggerHighlights && !settings.hideSimilar);
+        if (silenced && message.alert) message.alert = { playSound: false, windowAlert: false };
         this.buffer.add(message);
         if (!message.flags.system && message.displayName) this.chatters.add(message.displayName);
         this.deps.onMessage(this, message);
+    }
+
+    addInlineMessage(message: ChatMessage): void {
+        this.buffer.add(message);
     }
 
     contextFor(sink: MessageSink): ChannelContext {
@@ -233,6 +266,9 @@ export class ChatChannel implements Channel, ChannelContext {
             findMessage: (id) => sink.findById(id) ?? this.buffer.findById(id),
             isThreadSubscribed: (rootId) => this.isThreadSubscribed(rootId),
             subscribeThread: (rootId) => this.subscribeThread(rootId),
+            isKnownChatter: (login) => this.chatters.has(login),
+            isModerator: () => this.isModerator(),
+            isBroadcaster: () => this.isBroadcaster(),
         };
     }
 
@@ -259,11 +295,11 @@ export class ChatChannel implements Channel, ChannelContext {
     }
 
     handleClearChat(irc: IrcMessage, sink: MessageSink = this.liveSink()): void {
-        applyClearChat(sink, irc, this.deps.global().now());
+        applyClearChat(sink, irc, this.deps.global().now(), this.deps.settings().timeoutStackStyle);
     }
 
     handleClearMsg(irc: IrcMessage, sink: MessageSink = this.liveSink()): void {
-        applyClearMsg(sink, irc, this.deps.global().now());
+        applyClearMsg(sink, irc, this.deps.global().now(), this.deps.settings().deletedMessageLengthLimit);
     }
 
     handleRoomState(irc: IrcMessage): string | undefined {
@@ -283,6 +319,31 @@ export class ChatChannel implements Channel, ChannelContext {
 
     handleUserState(irc: IrcMessage): void {
         this.highRateLimit = hasHighRateLimit(irc.tags);
+        const badges = (irc.tags.badges ?? "").split(",").map((badge) => badge.split("/")[0]);
+        this.moderator = irc.tags.mod === "1" || badges.includes("moderator") || badges.includes("broadcaster");
+    }
+
+    handleJoinPart(nick: string, joined: boolean): void {
+        const settings = this.deps.settings();
+        const enabled = joined ? settings.showJoins : settings.showParts;
+        if (!enabled) return;
+        const viewer = { isModerator: this.isModerator(), isBroadcaster: this.isBroadcaster() };
+        if (this.deps.global().ignores.isIgnoredUser(nick, viewer)) return;
+        const pending = joined ? this.pendingJoins : this.pendingParts;
+        pending.push(nick);
+        const timer = joined ? this.joinTimer : this.partTimer;
+        if (timer !== undefined) return;
+        const flush = () => {
+            if (joined) this.joinTimer = undefined;
+            else this.partTimer = undefined;
+            const users = pending.splice(0).sort((a, b) => a.localeCompare(b));
+            if (users.length === 0) return;
+            const prefix = joined ? "Users joined:" : "Users parted:";
+            this.addMessage(makeUserListMessage(this.name, prefix, users, (login) => this.tintFor(login)));
+        };
+        const handle = this.deps.timers.setTimeout(flush, JOIN_PART_MERGE_MS);
+        if (joined) this.joinTimer = handle;
+        else this.partTimer = handle;
     }
 
     handleNotice(result: NoticeResult): void {
@@ -323,7 +384,8 @@ export class ChatChannel implements Channel, ChannelContext {
         const wasLive = !!this.state.live?.live;
         const isLive = !!live?.live;
         this.updateInfo({ live });
-        if (isLive && !wasLive) this.addMessage(makeLiveMessage(this.name, this.displayName()));
+        const title = this.deps.settings().showTitleInLiveMessage ? live?.title : undefined;
+        if (isLive && !wasLive) this.addMessage(makeLiveMessage(this.name, this.displayName(), Date.now(), title));
         else if (!isLive && wasLive) this.addMessage(makeOfflineMessage(this.name, this.displayName()));
     }
 
@@ -338,6 +400,8 @@ export class ChatChannel implements Channel, ChannelContext {
     }
 
     dispose(): void {
+        if (this.joinTimer !== undefined) this.deps.timers.clearTimeout(this.joinTimer);
+        if (this.partTimer !== undefined) this.deps.timers.clearTimeout(this.partTimer);
         this.buffer.dispose();
     }
 
@@ -357,19 +421,22 @@ export class ChatChannel implements Channel, ChannelContext {
             for (const emote of emotes) candidates.push({ emote, provider });
         };
         const globals = this.deps.globalEmotes();
+        const settings = this.deps.settings();
+        const unlisted = settings.showUnlistedSevenTVEmotes;
         push(this.deps.twitchEmotes(), "Twitch Emote");
-        push(this.emoteSets.bttv.values(), "Channel BetterTTV");
-        push(this.emoteSets.ffz.values(), "Channel FrankerFaceZ");
-        push(this.emoteSets.seventv.values(), "Channel 7TV");
-        push(globals.bttv.values(), "Global BetterTTV");
-        push(globals.ffz.values(), "Global FrankerFaceZ");
-        push(globals.seventv.values(), "Global 7TV");
+        push(visibleEmotes(this.emoteSets.bttv, settings.enableBTTVChannelEmotes, unlisted), "Channel BetterTTV");
+        push(visibleEmotes(this.emoteSets.ffz, settings.enableFFZChannelEmotes, unlisted), "Channel FrankerFaceZ");
+        push(visibleEmotes(this.emoteSets.seventv, settings.enableSevenTVChannelEmotes, unlisted), "Channel 7TV");
+        push(visibleEmotes(globals.bttv, settings.enableBTTVGlobalEmotes, unlisted), "Global BetterTTV");
+        push(visibleEmotes(globals.ffz, settings.enableFFZGlobalEmotes, unlisted), "Global FrankerFaceZ");
+        push(visibleEmotes(globals.seventv, settings.enableSevenTVGlobalEmotes, unlisted), "Global 7TV");
         return candidates;
     }
 
     private completionUsers() {
         const users = this.chatters.all();
-        if (!this.chatters.has(this.name)) users.push({ login: this.name, displayName: this.displayName() });
+        const includeBroadcaster = this.deps.settings().alwaysIncludeBroadcasterInUserCompletions;
+        if (includeBroadcaster && !this.chatters.has(this.name)) users.push({ login: this.name, displayName: this.displayName() });
         return users;
     }
 }

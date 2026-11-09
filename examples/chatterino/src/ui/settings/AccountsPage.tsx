@@ -1,61 +1,43 @@
-import { useState } from "react";
-import { Text, View } from "react-native-gpui";
-import { PushButton } from "../common/PushButton";
+import { View } from "react-native-gpui";
+import type { Account } from "../../data/api";
 import { useApp } from "../state/AppContext";
 import { useStore } from "../state/useStore";
-import { SETTINGS_COLORS, chromeColors } from "../theme";
-import { SettingsTitle } from "./SettingsTitle";
+import { EditableModelView } from "./EditableModelView";
+import type { TableColumn } from "./tableTypes";
 
-const TABLE_BACKGROUND = "#333333";
+type Row = { kind: "category"; label: string } | { kind: "account"; account: Account };
+
+const COLUMNS: TableColumn<Row>[] = [
+    {
+        title: "",
+        kind: "action",
+        text: (row) => (row.kind === "category" ? row.label : row.account.login),
+        textColor: (row) => (row.kind === "category" ? "#ffffff" : undefined),
+    },
+];
 
 export function AccountsPage() {
-    const { core, theme, fonts, openOverlay } = useApp();
-    const colors = chromeColors(theme);
-    const accounts = useStore(core.accounts);
-    const [selected, setSelected] = useState<string | undefined>(undefined);
-    const text = { color: colors.text, fontFamily: fonts.appFamily, fontSize: fonts.appSize };
+    const { core, openOverlay } = useApp();
+    const state = useStore(core.accounts);
+    const rows: Row[] = state.accounts.length > 0 ? [{ kind: "category", label: "Twitch" }, ...state.accounts.map((account): Row => ({ kind: "account", account }))] : [];
 
-    const remove = () => {
-        if (!selected) return;
-        core.removeAccount(selected);
-        setSelected(undefined);
+    const change = (next: Row[]) => {
+        const kept = new Set(next.filter((row): row is Extract<Row, { kind: "account" }> => row.kind === "account").map((row) => row.account.login));
+        for (const account of state.accounts) if (!kept.has(account.login)) core.removeAccount(account.login);
     };
 
     return (
-        <View style={{ paddingBottom: 24 }}>
-            <SettingsTitle text="Accounts" />
-            <View style={{ flexDirection: "row", gap: 6, marginBottom: 6 }}>
-                <PushButton testID="account-open-add" label="Add" onPress={() => openOverlay({ kind: "addAccount" })} />
-                <PushButton testID="account-remove" label="Remove" disabled={!selected} onPress={remove} />
-            </View>
-            <View testID="account-table" style={{ backgroundColor: TABLE_BACKGROUND, minHeight: 240, paddingVertical: 4 }}>
-                <Text style={{ ...text, fontSize: 16, fontWeight: "300", paddingHorizontal: 6, paddingVertical: 2 }}>Twitch</Text>
-                {accounts.accounts.map((account) => {
-                    const isSelected = selected === account.login;
-                    const isCurrent = accounts.current === account.login;
-                    return (
-                        <View
-                            key={account.login}
-                            testID={`account-${account.login}`}
-                            accessibilityState={{ selected: isSelected }}
-                            style={{
-                                height: 24,
-                                flexDirection: "row",
-                                alignItems: "center",
-                                paddingHorizontal: 18,
-                                backgroundColor: isSelected ? colors.highlight : undefined,
-                            }}
-                            onClick={() => setSelected(account.login)}
-                        >
-                            <Text style={{ ...text, flex: 1 }}>{account.login}</Text>
-                            {isCurrent ? <Text style={{ ...text, color: SETTINGS_COLORS.description }}>current</Text> : null}
-                        </View>
-                    );
-                })}
-            </View>
-            <Text style={{ ...text, color: SETTINGS_COLORS.description, marginTop: 8 }}>
-                Switch between accounts with the account button left of the tabs.
-            </Text>
+        <View testID="settings-accounts" style={{ flex: 1, padding: 10, paddingRight: 9 }}>
+            <EditableModelView
+                testID="accounts"
+                columns={COLUMNS}
+                rows={rows}
+                movable={false}
+                showHeader={false}
+                fixedRows={rows.length > 0 ? 1 : 0}
+                onAdd={() => openOverlay({ kind: "addAccount" })}
+                onChange={change}
+            />
         </View>
     );
 }

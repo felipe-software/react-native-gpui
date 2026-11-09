@@ -804,6 +804,17 @@ pub fn tweens_active() -> bool {
     tweens_in_flight() || loops_active()
 }
 
+pub fn active_ids() -> HashSet<u64> {
+    let mut ids: HashSet<u64> = GPUI_TWEENS
+        .lock()
+        .unwrap()
+        .keys()
+        .map(|(id, _)| *id)
+        .collect();
+    ids.extend(GPUI_LOOPS.lock().unwrap().keys().map(|(id, _)| *id));
+    ids
+}
+
 /// How often a repeating animation is worth advancing. A spinner is a few pixels of
 /// opacity, and pinning the whole window to the tween driver's frame rate to move it was
 /// paying a full repaint every 8ms for something nobody can see move that fast. The

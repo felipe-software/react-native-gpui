@@ -68,6 +68,22 @@ pub fn command(id: &str) {
     emit_value(json!({ "type": "command", "id": id }));
 }
 
+pub fn window_event(window_id: u64, name: &str, extra: serde_json::Value) {
+    let mut event = json!({ "type": "window", "windowId": window_id, "event": name });
+    if let (Some(event), serde_json::Value::Object(extra)) = (event.as_object_mut(), extra) {
+        event.extend(extra);
+    }
+    emit_value(event);
+}
+
+pub fn app_state(active: bool, focused_window: Option<u64>) {
+    emit_value(json!({
+        "type": "appState",
+        "state": if active { "active" } else { "inactive" },
+        "windowId": focused_window,
+    }));
+}
+
 /// A gesture event with no payload (press / pressIn / pressOut / longPress / focus / blur).
 pub fn event(id: u64, name: &str) {
     emit_value(json!({ "type": "event", "id": id, "event": name }));
@@ -293,6 +309,19 @@ pub fn key_press(
         "altKey": alt_key,
         "metaKey": meta_key,
         "isComposing": is_composing
+    }));
+}
+
+pub fn key_up(id: u64, key: &str, shift_key: bool, ctrl_key: bool, alt_key: bool, meta_key: bool) {
+    emit_value(json!({
+        "type": "event",
+        "id": id,
+        "event": "keyUp",
+        "key": key,
+        "shiftKey": shift_key,
+        "ctrlKey": ctrl_key,
+        "altKey": alt_key,
+        "metaKey": meta_key,
     }));
 }
 

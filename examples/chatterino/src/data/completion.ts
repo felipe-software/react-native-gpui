@@ -11,6 +11,8 @@ export type CompletionSources = {
     users: () => UserCandidate[];
     commands: () => string[];
     mentionWithComma: boolean;
+    prefixOnly?: boolean;
+    usersOnlyWithAt?: boolean;
 };
 
 const CHATTER_LIMIT = 2000;
@@ -51,7 +53,9 @@ function emoteCompletions(query: string, sources: CompletionSources): Completion
     const seen = new Set<string>();
     const results: Array<{ name: string; completion: Completion }> = [];
     for (const { emote, provider } of sources.emotes()) {
-        if (!emote.name.toLowerCase().startsWith(normalized) || seen.has(emote.name)) continue;
+        const lowerName = emote.name.toLowerCase();
+        const matches = sources.prefixOnly === false ? lowerName.includes(normalized) : lowerName.startsWith(normalized);
+        if (!matches || seen.has(emote.name)) continue;
         seen.add(emote.name);
         results.push({
             name: emote.name,
@@ -111,6 +115,6 @@ export function complete(word: string, atStartOfMessage: boolean, sources: Compl
     const isCommand = atStartOfMessage && (word.startsWith("/") || word.startsWith("."));
     if (isCommand) return commandCompletions(word, sources);
     const emotes = emoteCompletions(word, sources);
-    const users = userCompletions(word, sources, false, atStartOfMessage);
+    const users = sources.usersOnlyWithAt ? [] : userCompletions(word, sources, false, atStartOfMessage);
     return dedupe([...emotes, ...users]);
 }

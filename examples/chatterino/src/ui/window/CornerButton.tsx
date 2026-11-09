@@ -1,5 +1,8 @@
-import { useState } from "react";
 import { Svg, View, type MouseResponderEvent } from "react-native-gpui";
+import { effectColor } from "../colors";
+import { HoverGlow } from "../common/HoverGlow";
+import { useButtonEffect } from "../common/useButtonEffect";
+import { useApp } from "../state/AppContext";
 
 type Props = {
     icon: string;
@@ -10,19 +13,35 @@ type Props = {
     onPress: (event: MouseResponderEvent) => void;
 };
 
+const WIDTH = 28;
+const HEIGHT = 27;
+
 export function CornerButton({ icon, color, hoverColor, testID, label, onPress }: Props) {
-    const [hovered, setHovered] = useState(false);
-    const iconColor = hovered ? hoverColor : color;
+    const { theme } = useApp();
+    const effect = useButtonEffect();
+    const iconColor = effect.hovered ? hoverColor : color;
     return (
         <View
             testID={testID}
             accessibilityLabel={label}
-            style={{ width: 28, height: 27, alignItems: "center", justifyContent: "center" }}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            nativeListGroup={`corner-${testID}`}
+            style={{ width: WIDTH, height: HEIGHT, alignItems: "center", justifyContent: "center" }}
+            onMouseEnter={effect.enter}
+            onMouseMove={effect.move}
+            onMouseLeave={effect.leave}
+            onMouseDown={effect.press}
+            onMouseUp={effect.release}
             onClick={onPress}
         >
             <Svg name={icon} style={{ width: 28, height: 28, color: iconColor }} />
+            <HoverGlow
+                width={WIDTH}
+                height={HEIGHT}
+                color={effectColor(theme.isLight)}
+                factor={effect.factor}
+                pointer={effect.pointer}
+                ripples={effect.ripples}
+            />
         </View>
     );
 }

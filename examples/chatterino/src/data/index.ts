@@ -11,6 +11,7 @@ export { STORAGE_KEYS } from "./persistence";
 export { themePalette, type ThemePalette } from "./theme";
 export { LINK_ACCOUNTS, LINK_RECONNECT } from "./messages/system";
 export { parseInternalLink, type InternalLink } from "./links/internal";
+export { parseModerationLink } from "./twitch/moderation-actions";
 
 export function createChatCore(options: ChatCoreOptions = {}): ChatCore & ChatCoreExtras {
     const platform = options.platform ?? platformHooksFrom(gpui as unknown as Record<string, unknown>);

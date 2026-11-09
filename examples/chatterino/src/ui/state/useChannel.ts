@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Channel, ChannelInfo } from "../../data/api";
 import type { Core } from "./AppContext";
-import { MENTIONS_CHANNEL } from "./ids";
+import { specialChannel, specialKindOf } from "./specialChannels";
 import type { Store } from "../../data/api";
 
 export function useChannel(core: Core, name: string): Channel | undefined {
@@ -11,8 +11,9 @@ export function useChannel(core: Core, name: string): Channel | undefined {
             setChannel(undefined);
             return;
         }
-        if (name === MENTIONS_CHANNEL) {
-            setChannel(core.mentions);
+        const kind = specialKindOf(name);
+        if (kind) {
+            setChannel(specialChannel(core, kind));
             return;
         }
         setChannel(core.join(name));

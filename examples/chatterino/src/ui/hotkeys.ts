@@ -4,6 +4,10 @@ import { findNode, splitLeaves } from "./layout/tree";
 import type { AppServices } from "./state/AppContext";
 import { inputRegistry, type InputCommand } from "./state/inputs";
 import { isModal } from "./state/overlays";
+import { overlayWindowFor } from "./overlays/overlayWindows";
+import { SETTINGS_SEARCH_KEY } from "./settings/SettingsSearchField";
+import { popupKeys } from "./state/popupKeys";
+import { uiScaleOf, zoomedScale, type ZoomDirection } from "./zoom";
 
 const TAB_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -34,6 +38,13 @@ export const HOTKEYS: AppCommandBinding[] = [
     { id: "input:previous", key: "up", context: "Input" },
     { id: "input:next", key: "down", context: "Input" },
     { id: "input:sendKeep", key: "secondary-enter", context: "Input" },
+    { id: "input:newline", key: "shift-enter", context: "Input" },
+    { id: "zoomIn", key: "secondary-+" },
+    { id: "zoomIn", key: "secondary-shift-=" },
+    { id: "zoomOut", key: "secondary--" },
+    { id: "zoomReset", key: "secondary-0" },
+    { id: "popupSplit", key: "secondary-n" },
+    { id: "quickSwitcher", key: "secondary-k" },
 ];
 
 const INPUT_COMMANDS: Record<string, InputCommand> = {
@@ -42,7 +53,10 @@ const INPUT_COMMANDS: Record<string, InputCommand> = {
     "input:previous": "previous",
     "input:next": "next",
     "input:sendKeep": "sendKeep",
+    "input:newline": "newline",
 };
+
+const ZOOM_DIRECTIONS: Record<string, ZoomDirection> = { zoomIn: "in", zoomOut: "out", zoomReset: "reset" };
 
 const FOCUS_DIRECTIONS = {
     focusLeft: "left",
@@ -61,14 +75,25 @@ function focusedSplit(services: AppServices) {
 }
 
 function closeTopOverlay(services: AppServices): boolean {
-    const top = services.overlays[services.overlays.length - 1];
+    const inWindow = services.overlays.filter((overlay) => overlayWindowFor(overlay) === null);
+    const top = inWindow[inWindow.length - 1];
     if (!top) return false;
     services.closeOverlay(top.id);
     if (top.kind === "selectChannel" && top.isNew) services.actions.discardSplit(top.splitId);
     return true;
 }
 
+function focusedPopup(services: AppServices) {
+    const key = inputRegistry.focused();
+    return services.overlays.find((overlay) => overlay.kind === "splitPopup" && overlay.id === key);
+}
+
 function runSplitCommand(id: string, services: AppServices): boolean {
+    const popup = focusedPopup(services);
+    if (popup && id === "closeSplit") {
+        services.closeOverlay(popup.id);
+        return true;
+    }
     const current = focusedSplit(services);
     if (id === "newSplit") {
         services.actions.newSplit();
@@ -97,6 +122,9 @@ function runSplitCommand(id: string, services: AppServices): boolean {
             return true;
         case "scrollToBottom":
             inputRegistry.get(split.id)?.scrollToBottom();
+            return true;
+        case "popupSplit":
+            if (split.channel) services.openOverlay({ kind: "splitPopup", channel: split.channel });
             return true;
     }
     return false;
@@ -129,9 +157,17 @@ function runWindowCommand(id: string, services: AppServices): boolean {
         case "reopenSplit":
             actions.reopenSplit();
             return true;
+        case "quickSwitcher":
+            services.openOverlay({ kind: "quickSwitcher" });
+            return true;
         case "toggleTabs":
             services.prefsStore.set((prefs) => ({ ...prefs, tabVisibility: prefs.tabVisibility === "none" ? "all" : "none" }));
             return true;
+    }
+    const zoom = ZOOM_DIRECTIONS[id];
+    if (zoom) {
+        services.core.settings.set((settings) => ({ ...settings, uiScale: zoomedScale(uiScaleOf(settings), zoom) }));
+        return true;
     }
     if (id in FOCUS_DIRECTIONS) {
         actions.moveFocus(FOCUS_DIRECTIONS[id as keyof typeof FOCUS_DIRECTIONS]);
@@ -140,8 +176,31 @@ function runWindowCommand(id: string, services: AppServices): boolean {
     return false;
 }
 
+function runPopupCommand(id: string, focusedInput: string | undefined): boolean {
+    const popup = popupKeys.get(focusedInput);
+    if (!popup) return false;
+    if (id.startsWith("selectTab:")) {
+        const number = Number(id.slice("selectTab:".length));
+        popup.selectTab(number === 9 ? "last" : number - 1);
+        return true;
+    }
+    switch (id) {
+        case "nextTab":
+            popup.stepTab(1);
+            return true;
+        case "previousTab":
+            popup.stepTab(-1);
+            return true;
+        case "search":
+            popup.focusSearch();
+            return true;
+    }
+    return false;
+}
+
 export function runHotkey(id: string, services: AppServices): void {
     const focusedInput = inputRegistry.focused();
+    if (runPopupCommand(id, focusedInput)) return;
     const inputCommand = INPUT_COMMANDS[id];
     if (inputCommand) {
         if (focusedInput) inputRegistry.get(focusedInput)?.command(inputCommand);
@@ -150,6 +209,11 @@ export function runHotkey(id: string, services: AppServices): void {
     if (id === "escape") {
         const handledByInput = !!focusedInput && !!inputRegistry.get(focusedInput)?.command("escape");
         if (!handledByInput) closeTopOverlay(services);
+        return;
+    }
+    const settingsOpen = services.overlays.some((overlay) => overlay.kind === "settings");
+    if (id === "search" && settingsOpen) {
+        inputRegistry.get(SETTINGS_SEARCH_KEY)?.focus();
         return;
     }
     const blockedByModal = services.overlays.some(isModal);

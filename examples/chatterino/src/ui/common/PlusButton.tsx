@@ -1,5 +1,8 @@
-import { useState } from "react";
 import { View, type MouseResponderEvent } from "react-native-gpui";
+import { effectColor } from "../colors";
+import { useApp } from "../state/AppContext";
+import { HoverGlow } from "./HoverGlow";
+import { useButtonEffect } from "./useButtonEffect";
 
 type Props = {
     width: number;
@@ -15,21 +18,35 @@ type Props = {
 };
 
 export function PlusButton({ width, height, centerX, centerY, length, color, hoverColor, testID, onPress, onMouseUp }: Props) {
-    const [hovered, setHovered] = useState(false);
-    const lineColor = hovered ? hoverColor : color;
+    const { theme } = useApp();
+    const effect = useButtonEffect();
+    const lineColor = effect.hovered ? hoverColor : color;
     const half = (length - 1) / 2;
     return (
         <View
             testID={testID}
             nativeListGroup={`plus-${testID ?? "button"}`}
             style={{ width, height }}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseEnter={effect.enter}
+            onMouseMove={effect.move}
+            onMouseLeave={effect.leave}
+            onMouseDown={effect.press}
             onClick={onPress}
-            onMouseUp={onMouseUp}
+            onMouseUp={(event) => {
+                effect.release();
+                onMouseUp?.(event);
+            }}
         >
             <View style={{ position: "absolute", left: centerX - half, top: centerY, width: length, height: 1, backgroundColor: lineColor }} />
             <View style={{ position: "absolute", left: centerX, top: centerY - half, width: 1, height: length, backgroundColor: lineColor }} />
+            <HoverGlow
+                width={width}
+                height={height}
+                color={effectColor(theme.isLight)}
+                factor={effect.factor}
+                pointer={effect.pointer}
+                ripples={effect.ripples}
+            />
         </View>
     );
 }

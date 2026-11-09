@@ -7,6 +7,7 @@ export type CompletionRow = { key: string; label: string; image?: string; insert
 type Props = {
     rows: CompletionRow[];
     selected: number;
+    bottom: number;
     theme: Theme;
     fonts: Fonts;
     onPick: (row: CompletionRow) => void;
@@ -20,7 +21,7 @@ const INSET = 11;
 const SELECTED = "rgba(0, 174, 239, 0.392)";
 const OUTLINE = "#999999";
 
-export function CompletionPopup({ rows, selected, theme, fonts, onPick }: Props) {
+export function CompletionPopup({ rows, selected, bottom, theme, fonts, onPick }: Props) {
     const start = Math.max(0, Math.min(selected - VISIBLE_ROWS + 1, rows.length - VISIBLE_ROWS));
     const visible = rows.slice(start, start + VISIBLE_ROWS);
     return (
@@ -28,7 +29,7 @@ export function CompletionPopup({ rows, selected, theme, fonts, onPick }: Props)
             testID="completion-popup"
             style={{
                 position: "absolute",
-                bottom: 37,
+                bottom,
                 left: "50%",
                 marginLeft: -WIDTH / 2,
                 width: WIDTH,

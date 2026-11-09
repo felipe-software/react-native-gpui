@@ -19,11 +19,23 @@ export type UserPiece = {
     tint: Tint;
     bold?: boolean;
     noSpace?: boolean;
+    mention?: { fallback: Tint };
 };
 
 export type EmotePiece = { kind: "emote"; emote: Emote; layers?: Emote[]; noSpace?: boolean };
 
-export type BadgePiece = { kind: "badge"; badge: Badge; tooltip: string };
+export type BadgePiece = { kind: "badge"; badge: Badge; tooltip: string; group?: BadgeGroup };
+
+export type BadgeGroup =
+    | "globalAuthority"
+    | "predictions"
+    | "channelAuthority"
+    | "subscription"
+    | "vanity"
+    | "chatterino"
+    | "ffz"
+    | "bttv"
+    | "seventv";
 
 export type Piece = TextPiece | UserPiece | EmotePiece | BadgePiece;
 
@@ -49,6 +61,11 @@ export type MessageFlags = {
     self?: boolean;
     announcement?: boolean;
     doNotNotify?: boolean;
+    whisper?: boolean;
+    receivedWhisper?: boolean;
+    similar?: boolean;
+    automod?: boolean;
+    join?: boolean;
 };
 
 export type ChatMessage = {
@@ -70,7 +87,12 @@ export type ChatMessage = {
     timeoutUser?: string;
     count: number;
     badges?: string[];
+    twitchBadges?: Array<{ key: string; value: string }>;
+    badgeInfos?: Record<string, string>;
+    rewardTitle?: string;
+    rewardCost?: number;
+    rewardId?: string;
     alert?: HighlightAlert;
 };
 
-export type HighlightAlert = { playSound: boolean; windowAlert: boolean };
+export type HighlightAlert = { playSound: boolean; windowAlert: boolean; soundUrl?: string };

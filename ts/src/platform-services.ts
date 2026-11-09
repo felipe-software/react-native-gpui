@@ -3,7 +3,7 @@ declare global {
     var __rngpui_storageInfo: { persistent: boolean; path: string | null } | undefined;
 }
 
-function platformRequest<T>(op: string, args: unknown): Promise<T> {
+export function platformRequest<T>(op: string, args: unknown): Promise<T> {
     const send = globalThis.__rngpui_platformRequest;
     if (typeof send !== "function") {
         return Promise.reject(new Error("the native platform host is not available"));

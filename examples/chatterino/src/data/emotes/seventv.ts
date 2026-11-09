@@ -33,7 +33,6 @@ function tooltipFor(name: string, baseName: string, author: string, isGlobal: bo
 }
 
 function isVisible(data: SeventvEmoteData): boolean {
-    if (!data.listed) return false;
     return ((data.flags ?? 0) & CONTENT_TWITCH_DISALLOWED) === 0;
 }
 
@@ -61,6 +60,7 @@ export function parseSeventvEmotes(emotes: SeventvActiveEmote[] | null | undefin
         };
         if (((active.flags ?? 0) & ACTIVE_ZERO_WIDTH) !== 0) emote.zeroWidth = true;
         if (data.animated) emote.animated = true;
+        if (!data.listed) emote.unlisted = true;
         map.set(active.name, emote);
     }
     return map;

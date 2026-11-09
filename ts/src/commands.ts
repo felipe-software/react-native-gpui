@@ -1,7 +1,8 @@
 // Host → native imperative commands. These don't go through the React commit/tree;
 // the embedded JavaScriptCore runtime hands them to the native service as host calls.
 // Components call `sendCommand`; the render layer wires the sink to the bridge.
-import type { ChatListMessage, ChatListMessagePatch } from "./chat-list-types";
+import type { ChatListMessage, ChatListMessagePatch, ChatListRevealAlign } from "./chat-list-types";
+import { platformRequest } from "./platform-services";
 import type { RendererProvenance, SerializedTerminalFrame } from "./runtime";
 
 export type AppCommandBinding = {
@@ -54,7 +55,9 @@ export type Command =
       }
     | { $cmd: "chatList"; id: number; op: "append" | "prepend"; messages: ChatListMessage[] }
     | { $cmd: "chatList"; id: number; op: "update"; patches: ChatListMessagePatch[] }
-    | { $cmd: "chatList"; id: number; op: "clear" | "scrollToBottom" }
+    | { $cmd: "chatList"; id: number; op: "clear" | "scrollToBottom" | "scrollToTop" }
+    | { $cmd: "chatList"; id: number; op: "scrollToMessage"; messageId: string; align?: ChatListRevealAlign }
+    | { $cmd: "chatList"; id: number; op: "page"; direction: -1 | 1 }
     | {
           $cmd: "nativeLayout";
           key: string;
@@ -193,6 +196,9 @@ export const NativeWindow = {
 export const NativeClipboard = {
     setString(text: string) {
         sendCommand({ $cmd: "clipboardWrite", text });
+    },
+    read(): Promise<string> {
+        return platformRequest<string>("clipboard.read", null).then((text) => (typeof text === "string" ? text : ""));
     },
 };
 

@@ -5,6 +5,7 @@ import type { ChannelInfo } from "../data/api";
 import { fontsFor } from "./fonts";
 import { HOTKEYS, runHotkey } from "./hotkeys";
 import { splitLeaves } from "./layout/tree";
+import { applyHotkeyOverrides } from "./settings/hotkeyCatalog";
 import { AppContext, type AppServices, type DragState, type TabActivity } from "./state/AppContext";
 import { hitAreas } from "./state/hitAreas";
 import { newId } from "./state/ids";
@@ -58,7 +59,7 @@ export function App() {
     );
 
     const theme = useMemo(() => themeFor(settings.theme), [settings.theme]);
-    const fonts = useMemo(() => fontsFor(settings), [settings.fontFamily, settings.fontSize]);
+    const fonts = useMemo(() => fontsFor(settings), [settings.fontFamily, settings.fontSize, settings.uiScale]);
 
     const services = useMemo<AppServices>(
         () => ({
@@ -92,9 +93,10 @@ export function App() {
     }, []);
 
     useEffect(() => {
-        AppCommands.configure({ bindings: HOTKEYS, menus: [] });
-        return AppCommands.addListener((id) => runHotkey(id, latest.current));
-    }, []);
+        AppCommands.configure({ bindings: applyHotkeyOverrides(HOTKEYS, settings.hotkeyOverrides), menus: [] });
+    }, [settings.hotkeyOverrides]);
+
+    useEffect(() => AppCommands.addListener((id) => runHotkey(id, latest.current)), []);
 
     useEffect(() => {
         const timer = setTimeout(() => {

@@ -32,7 +32,7 @@ const RNGPUI_EXPORTS = [
   'nextSequentialKeyboardNavigationTarget',
   'Portal', 'PortalHost', 'PortalProvider', 'NativePortal', 'NativePortalHost', 'usePortal',
   'setupTamaguiNativePortal', 'startBridge', 'platformDriver', 'registerPseudoListener',
-  'TurboModuleRegistry',
+  'TurboModuleRegistry', 'Window', 'useAppState', 'useWindowFocused',
 ]
 
 export function rngpuiHotUpdateAliasPlugin() {

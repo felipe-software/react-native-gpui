@@ -13,7 +13,7 @@ export class MentionsChannel implements Channel {
 
     constructor(timers: BufferTimers, settings: () => Settings, renderOptions: () => Omit<RenderOptions, "showChannelName">) {
         this.buffer = new MessageBuffer(
-            (message) => renderMessage(message, { ...renderOptions(), showChannelName: true }),
+            (message) => renderMessage(message, { ...renderOptions(), showChannelName: true, ignoreHighlights: true }),
             timers,
             () => settings().messageLimit,
         );

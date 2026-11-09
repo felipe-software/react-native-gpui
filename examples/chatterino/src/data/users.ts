@@ -69,3 +69,27 @@ export async function fetchUserInfo(fetchFn: FetchLike, login: string): Promise<
 
 export const LIVE_POLL_INTERVAL_MS = 60_000;
 export const LIVE_BATCH_SIZE = 25;
+
+type PronounDefinition = { subject?: string; object?: string; singular?: boolean };
+
+let pronounDefinitions: Promise<Record<string, PronounDefinition>> | undefined;
+
+function formatPronoun(main: PronounDefinition | undefined, alt: PronounDefinition | undefined): string | undefined {
+    if (!main?.subject) return undefined;
+    if (alt?.subject) return `${main.subject}/${alt.subject}`.toLowerCase();
+    if (main.singular || !main.object) return main.subject.toLowerCase();
+    return `${main.subject}/${main.object}`.toLowerCase();
+}
+
+export async function fetchPronouns(fetchFn: FetchLike, login: string): Promise<string | undefined> {
+    pronounDefinitions ??= requestJson<Record<string, PronounDefinition>>(fetchFn, "https://api.pronouns.alejo.io/v1/pronouns").catch(() => {
+        pronounDefinitions = undefined;
+        return {};
+    });
+    const user = await requestJson<{ pronoun_id?: string; alt_pronoun_id?: string | null }>(
+        fetchFn,
+        `https://api.pronouns.alejo.io/v1/users/${encodeURIComponent(login.toLowerCase())}`,
+    );
+    const definitions = await pronounDefinitions;
+    return formatPronoun(user.pronoun_id ? definitions[user.pronoun_id] : undefined, user.alt_pronoun_id ? definitions[user.alt_pronoun_id] : undefined);
+}

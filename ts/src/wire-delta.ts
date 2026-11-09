@@ -12,6 +12,35 @@ export function createWireSourceCache(): WireSourceCache {
 
 const defaultSourceCache = createWireSourceCache();
 
+export const sharedWireSources = createWireSourceCache();
+
+const EMPTY_NODES: ReadonlyArray<SerializedNode> = [];
+const EMPTY_STYLE: Readonly<Record<string, unknown>> = {};
+
+export function sameTopLevelTree(a: SerializedNode, b: SerializedNode): boolean {
+    if (a === b) return true;
+    if (a.globalId !== b.globalId) return false;
+    const ac = a.children ?? EMPTY_NODES;
+    const bc = b.children ?? EMPTY_NODES;
+    if (ac.length !== bc.length) return false;
+    for (let i = 0; i < ac.length; i++) if (ac[i] !== bc[i]) return false;
+    const as = a.style ?? EMPTY_STYLE;
+    const bs = b.style ?? EMPTY_STYLE;
+    const ak = Object.keys(as);
+    let bLength = 0;
+    for (const key in bs) if (Object.prototype.hasOwnProperty.call(bs, key)) bLength++;
+    if (ak.length !== bLength) return false;
+    for (const k of ak) {
+        if (
+            !Object.prototype.hasOwnProperty.call(bs, k) ||
+            (as as Record<string, unknown>)[k] !== (bs as Record<string, unknown>)[k]
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Delta wire. The reconciler memoizes serialization — an unchanged subtree re-emits the
 // SAME SerializedNode object, and any change dirties the node AND its ancestors
 // (markSerializeDirty). So a node whose object the host already holds means its whole

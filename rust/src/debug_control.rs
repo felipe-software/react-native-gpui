@@ -211,11 +211,32 @@ fn string_set(value: &Value, key: &str) -> Option<std::collections::HashSet<Stri
 }
 
 fn incoming_for_request(value: &Value, reply: Sender<Value>) -> Result<Incoming, &'static str> {
+    let incoming = incoming_for_command(value, reply)?;
+    let window = value.get("window").and_then(Value::as_u64).unwrap_or(0);
+    if window == 0 {
+        return Ok(incoming);
+    }
+    Ok(Incoming::ForWindow {
+        window,
+        inner: Box::new(incoming),
+    })
+}
+
+fn incoming_for_command(value: &Value, reply: Sender<Value>) -> Result<Incoming, &'static str> {
     let cmd = value
         .get("$cmd")
         .and_then(Value::as_str)
         .ok_or("missing $cmd")?;
     match cmd {
+        "windows" => Ok(Incoming::DebugWindows { reply }),
+        "systemClose" => Ok(Incoming::DebugSystemClose { reply }),
+        "activate" => Ok(Incoming::DebugActivate {
+            active: value
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or("activate needs active")?,
+            reply,
+        }),
         "dump" => Ok(Incoming::DebugDump { reply }),
         "chatListState" => Ok(Incoming::DebugChatListState {
             id: value.get("id").and_then(Value::as_u64),
@@ -262,6 +283,16 @@ fn incoming_for_request(value: &Value, reply: Sender<Value>) -> Result<Incoming,
         "realtap" => Ok(Incoming::DebugRealTap {
             x: number(value, "x")?,
             y: number(value, "y")?,
+            button: match value.get("button").and_then(Value::as_str) {
+                Some("middle") => gpui::MouseButton::Middle,
+                Some("right") => gpui::MouseButton::Right,
+                _ => gpui::MouseButton::Left,
+            },
+            modifiers: modifiers(value),
+            reply,
+        }),
+        "realModifiers" => Ok(Incoming::DebugRealModifiers {
+            modifiers: modifiers(value),
             reply,
         }),
         "realcontext" => Ok(Incoming::DebugRealContext {
@@ -497,6 +528,21 @@ fn optional_range(
         return Err("range end must not precede start");
     }
     Ok(Some(start..end))
+}
+
+fn modifiers(value: &Value) -> gpui::Modifiers {
+    let names: Vec<&str> = value
+        .get("modifiers")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    gpui::Modifiers {
+        control: names.contains(&"control"),
+        shift: names.contains(&"shift"),
+        alt: names.contains(&"alt"),
+        platform: names.contains(&"meta"),
+        function: false,
+    }
 }
 
 fn number(value: &Value, key: &'static str) -> Result<f32, &'static str> {

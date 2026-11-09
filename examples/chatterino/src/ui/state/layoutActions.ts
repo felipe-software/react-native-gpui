@@ -17,6 +17,7 @@ import {
     appendSplit,
     findNode,
     insertRelative,
+    mapNode,
     neighborSplit,
     preferredAfterFocus,
     removeNode,
@@ -123,6 +124,44 @@ export function createLayoutActions(deps: LayoutDeps) {
         focusSplit(splitId);
     }
 
+    function insertEmptyAt(tabId: string, position: SplitPosition): void {
+        const layout = read();
+        const tab = tabById(layout, tabId);
+        if (!tab) return;
+        const added = leaf("");
+        write(setTabRoot(layout, tab.id, insertRelative(tab.root, added, position, containerId)));
+        focusSplit(added.id, false);
+    }
+
+    function insertEmptySplit(splitId: string, direction: Direction): void {
+        const tab = tabOfSplit(read(), splitId);
+        if (tab) insertEmptyAt(tab.id, { relativeId: splitId, direction });
+    }
+
+    function openChannelInNewSplit(splitId: string, channel: string): void {
+        const layout = read();
+        const tab = tabOfSplit(layout, splitId);
+        if (!tab) return;
+        const added = leaf(channel);
+        write(setTabRoot(layout, tab.id, insertRelative(tab.root, added, { relativeId: splitId, direction: "right" }, containerId)));
+        focusSplit(added.id);
+    }
+
+    function openChannelInNewTab(channel: string): void {
+        const added = leaf(channel);
+        const tab: TabLayout = { id: newId("tab"), root: added, focusedSplitId: added.id };
+        write(addTab(read(), tab));
+        focusSplit(added.id);
+    }
+
+    function setModerationMode(splitId: string, enabled: boolean): void {
+        const layout = read();
+        const tab = tabOfSplit(layout, splitId);
+        if (!tab?.root) return;
+        const root = mapNode(tab.root, splitId, (node) => (node.type === "split" ? { ...node, moderationMode: enabled } : node));
+        write(setTabRoot(layout, tab.id, root));
+    }
+
     function moveFocus(direction: Direction): void {
         const tab = selectedTab(read());
         if (!tab?.focusedSplitId) return;
@@ -209,6 +248,11 @@ export function createLayoutActions(deps: LayoutDeps) {
         reopenSplit,
         changeChannel,
         moveFocus,
+        insertEmptyAt,
+        insertEmptySplit,
+        openChannelInNewSplit,
+        openChannelInNewTab,
+        setModerationMode,
         dropSplit,
         resize,
         resetContainer,

@@ -1,6 +1,6 @@
 import type { Badge, Emote } from "../emotes/types";
 import { linkDisplayText, linkTarget, parseLink } from "../links/parse";
-import type { ChatMessage, MessageFlags, Piece, Tint } from "./model";
+import type { BadgeGroup, ChatMessage, MessageFlags, Piece, Tint } from "./model";
 
 let sequence = 0;
 
@@ -39,6 +39,10 @@ export class PieceBuilder {
         this.pieces.push(piece);
     }
 
+    mention(text: string, login: string, tint: Tint, fallback: Tint): void {
+        this.pieces.push({ kind: "user", text, login, tint, bold: true, mention: { fallback } });
+    }
+
     noSpaceAfterLast(): void {
         const last = this.pieces[this.pieces.length - 1];
         if (last && last.kind !== "badge") last.noSpace = true;
@@ -53,18 +57,21 @@ export class PieceBuilder {
         this.pieces.push({ kind: "emote", emote });
     }
 
-    badge(badge: Badge, tooltip = badge.tooltip): void {
-        this.pieces.push({ kind: "badge", badge, tooltip });
+    badge(badge: Badge, tooltip = badge.tooltip, group?: BadgeGroup): void {
+        const piece: Piece = { kind: "badge", badge, tooltip };
+        if (group) piece.group = group;
+        this.pieces.push(piece);
     }
 
-    link(word: string, tint: Tint = "text"): boolean {
+    link(word: string, tint: Tint = "text", lowercase = true): boolean {
         const parsed = parseLink(word);
         if (!parsed) return false;
         if (parsed.prefix) {
             this.text(parsed.prefix, tint);
             this.noSpaceAfterLast();
         }
-        this.text(linkDisplayText(parsed), "link", { link: linkTarget(parsed) });
+        const display = lowercase ? linkDisplayText(parsed) : parsed.link;
+        this.text(display, "link", { link: linkTarget(parsed) });
         if (parsed.suffix) {
             this.noSpaceAfterLast();
             this.text(parsed.suffix, tint);

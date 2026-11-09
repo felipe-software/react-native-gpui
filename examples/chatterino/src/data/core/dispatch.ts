@@ -14,6 +14,7 @@ export type DispatchDeps = {
     now: () => number;
     onRoomId: (channel: ChatChannel, roomId: string) => void;
     onEmoteSets: (sets: string[]) => void;
+    onWhisper?: (message: IrcMessage) => void;
 };
 
 export class IrcDispatcher {
@@ -47,9 +48,14 @@ export class IrcDispatcher {
                 return;
             case "JOIN":
                 if (this.isSelf(message)) this.withChannel(message, (channel) => channel.handleSelfJoin());
+                else this.withChannel(message, (channel) => channel.handleJoinPart(message.nick, true));
                 return;
             case "PART":
                 if (this.isSelf(message)) this.withChannel(message, (channel) => channel.handleSelfPart());
+                else this.withChannel(message, (channel) => channel.handleJoinPart(message.nick, false));
+                return;
+            case "WHISPER":
+                this.deps.onWhisper?.(message);
                 return;
         }
     }

@@ -117,6 +117,7 @@ fn drag_trace() -> bool {
     *DRAG_TRACE
 }
 static ACTIVE_MOUSE_TARGET: Lazy<Mutex<Option<u64>>> = Lazy::new(|| Mutex::new(None));
+static AUX_PRESS_TARGET: Lazy<Mutex<Option<u64>>> = Lazy::new(|| Mutex::new(None));
 static CAPTURED_MOUSE_UP_TARGET: Lazy<Mutex<Option<u64>>> = Lazy::new(|| Mutex::new(None));
 static ACTIVE_PRESS_DRAG: Lazy<Mutex<Option<ActivePressDrag>>> = Lazy::new(|| Mutex::new(None));
 static SYNTH_DRAG_START_TARGET: Lazy<Mutex<Option<DragReleaseTarget>>> =
@@ -138,15 +139,71 @@ thread_local! {
     // container wrapper.
     static SCROLL_CULL_VIEWPORTS: RefCell<Vec<Bounds<Pixels>>> = const { RefCell::new(Vec::new()) };
 
+    static POINTER_FRAME: RefCell<PointerFrame> = const { RefCell::new(PointerFrame::unassigned()) };
+    static PARKED_POINTER_FRAMES: RefCell<HashMap<u64, PointerFrame>> = RefCell::new(HashMap::new());
+}
+
+struct PointerFrame {
+    window: u64,
     // one entry per element that inserted a hitbox this frame, in prepaint order —
     // which is paint order, z-index included, because prepaint walks children through
     // `stacked_child_indices`. See `pointer_reaches`.
-    static POINTER_SPANS: RefCell<Vec<PointerSpan>> = const { RefCell::new(Vec::new()) };
-
+    spans: Vec<PointerSpan>,
     // memoized `front_most_span` for the current (frame, mouse position). Without it every
     // hover-styled element would rescan every span on every paint and every mouse event,
     // which is quadratic in a list of interactive rows.
-    static FRONT_MOST: Cell<Option<(Point<Pixels>, Option<usize>)>> = const { Cell::new(None) };
+    front_most: Cell<Option<(Point<Pixels>, Option<usize>)>>,
+}
+
+impl PointerFrame {
+    const fn unassigned() -> Self {
+        Self {
+            window: u64::MAX,
+            spans: Vec::new(),
+            front_most: Cell::new(None),
+        }
+    }
+
+    fn for_window(window: u64) -> Self {
+        Self {
+            window,
+            spans: Vec::new(),
+            front_most: Cell::new(None),
+        }
+    }
+}
+
+fn window_key(window: &Window) -> u64 {
+    window.window_handle().window_id().as_u64()
+}
+
+fn with_pointer_frame<R>(window: &Window, f: impl FnOnce(&mut PointerFrame) -> R) -> R {
+    let key = window_key(window);
+    POINTER_FRAME.with_borrow_mut(|current| {
+        if current.window != key {
+            let next = PARKED_POINTER_FRAMES
+                .with_borrow_mut(|parked| parked.remove(&key))
+                .unwrap_or_else(|| PointerFrame::for_window(key));
+            let previous = std::mem::replace(current, next);
+            if previous.window != u64::MAX {
+                PARKED_POINTER_FRAMES.with_borrow_mut(|parked| {
+                    parked.insert(previous.window, previous);
+                });
+            }
+        }
+        f(current)
+    })
+}
+
+pub fn forget_pointer_window(window: u64) {
+    POINTER_FRAME.with_borrow_mut(|current| {
+        if current.window == window {
+            *current = PointerFrame::unassigned();
+        }
+    });
+    PARKED_POINTER_FRAMES.with_borrow_mut(|parked| {
+        parked.remove(&window);
+    });
 }
 
 /// A hitbox plus the half-open range of spans covering its subtree.
@@ -158,27 +215,37 @@ struct PointerSpan {
     end: usize,
 }
 
-/// Clear the pointer spans before this frame's prepaint repopulates them. Paired with
+/// Clear this window's pointer spans before its prepaint repopulates them. Paired with
 /// `hit_passthrough::begin_frame` at the top of the render pass.
-pub fn begin_pointer_frame() {
-    POINTER_SPANS.with_borrow_mut(|spans| spans.clear());
-    FRONT_MOST.set(None);
+pub fn begin_pointer_frame(window: &Window) {
+    with_pointer_frame(window, |frame| {
+        frame.spans.clear();
+        frame.front_most.set(None);
+    });
 }
 
-pub(crate) fn open_pointer_span(hitbox: HitboxId, element: u64, pseudo: bool) -> usize {
-    POINTER_SPANS.with_borrow_mut(|spans| {
-        spans.push(PointerSpan {
+pub(crate) fn open_pointer_span(
+    window: &Window,
+    hitbox: HitboxId,
+    element: u64,
+    pseudo: bool,
+) -> usize {
+    with_pointer_frame(window, |frame| {
+        frame.spans.push(PointerSpan {
             hitbox,
             element,
             pseudo,
             end: usize::MAX,
         });
-        spans.len() - 1
+        frame.spans.len() - 1
     })
 }
 
-pub(crate) fn close_pointer_span(index: usize) {
-    POINTER_SPANS.with_borrow_mut(|spans| spans[index].end = spans.len());
+pub(crate) fn close_pointer_span(window: &Window, index: usize) {
+    with_pointer_frame(window, |frame| {
+        let end = frame.spans.len();
+        frame.spans[index].end = end;
+    });
 }
 
 /// True when the pointer genuinely reaches this node: it is the top-most node under the
@@ -200,11 +267,14 @@ pub(crate) fn close_pointer_span(index: usize) {
 /// parent hears a press on its child only by emitting its own event here.
 pub(crate) fn pointer_reaches(span: Option<usize>, window: &Window) -> bool {
     let Some(index) = span else { return false };
-    POINTER_SPANS.with_borrow(|spans| {
-        let Some(top) = front_most_span(spans, window) else {
+    with_pointer_frame(window, |frame| {
+        let Some(top) = front_most_span(frame, window) else {
             return false;
         };
-        index <= top && top < spans[index].end
+        frame
+            .spans
+            .get(index)
+            .is_some_and(|span| index <= top && top < span.end)
     })
 }
 
@@ -214,24 +284,25 @@ pub(crate) fn pointer_reaches(span: Option<usize>, window: &Window) -> bool {
 /// Memoized on the mouse position, which with the per-frame reset covers everything that
 /// can move the answer: gpui recomputes its hit test when the frame finishes and when the
 /// pointer moves, and nowhere else.
-fn front_most_span(spans: &[PointerSpan], window: &Window) -> Option<usize> {
+fn front_most_span(frame: &PointerFrame, window: &Window) -> Option<usize> {
     let position = window.mouse_position();
-    if let Some((cached_position, index)) = FRONT_MOST.get()
+    if let Some((cached_position, index)) = frame.front_most.get()
         && cached_position == position
     {
         return index;
     }
-    let index = spans
+    let index = frame
+        .spans
         .iter()
         .rposition(|span| span.hitbox.is_hovered(window));
-    FRONT_MOST.set(Some((position, index)));
+    frame.front_most.set(Some((position, index)));
     index
 }
 
 #[derive(Clone, Default)]
 pub struct DivPrepaintState {
     hitbox: Option<Hitbox>,
-    // index of this element's entry in the frame's `POINTER_SPANS`, for `pointer_reaches`.
+    // index of this element's entry in its window's pointer frame, for `pointer_reaches`.
     pointer_span: Option<usize>,
     max_scroll_x: f32,
     max_scroll_y: f32,
@@ -448,12 +519,12 @@ pub fn re_evaluate_pseudo_hover(window: &Window) {
     if SCROLL_HOVER.lock().unwrap().suppressed {
         return;
     }
-    let reached = POINTER_SPANS.with_borrow(|spans| {
+    let reached = with_pointer_frame(window, |frame| {
         let mut reached: Vec<u64> = Vec::new();
-        let Some(top) = front_most_span(spans, window) else {
+        let Some(top) = front_most_span(frame, window) else {
             return reached;
         };
-        for span in spans[..=top].iter().filter(|span| span.pseudo) {
+        for span in frame.spans[..=top].iter().filter(|span| span.pseudo) {
             if top < span.end {
                 reached.push(span.element);
             }
@@ -910,6 +981,12 @@ pub fn listens_pointer_down(events: &[String]) -> bool {
     }) || events_have_press_action(events)
 }
 
+pub const NO_PRESS_DRAG_GROUP: &str = "rngpui:no-press-drag";
+
+fn press_drag_disabled(group: &Option<String>) -> bool {
+    group.as_deref() == Some(NO_PRESS_DRAG_GROUP)
+}
+
 fn press_drag_groups_match(active_group: &Option<String>, target_group: &Option<String>) -> bool {
     match (active_group.as_deref(), target_group.as_deref()) {
         (Some(active), Some(target)) => active == target,
@@ -924,6 +1001,9 @@ fn press_drag_should_activate(
     target_group: &Option<String>,
 ) -> bool {
     if target_id == active.start_id && !active.left_start {
+        return false;
+    }
+    if press_drag_disabled(target_group) {
         return false;
     }
     if !press_drag_groups_match(&active.group, target_group) {
@@ -1034,7 +1114,8 @@ pub fn synth_drag_start(
     };
     *SYNTH_DRAG_START_TARGET.lock().unwrap() = Some(target.clone());
     *SYNTH_DRAG_LAST_TARGET.lock().unwrap() = Some(target);
-    if press_action {
+    let group_owned = group.map(str::to_string);
+    if press_action && !press_drag_disabled(&group_owned) {
         *ACTIVE_PRESS_DRAG.lock().unwrap() = Some(ActivePressDrag {
             start_id: id,
             group: group.map(str::to_string),
@@ -1765,6 +1846,7 @@ impl Element for ReactDivElement {
         // this element's whole subtree.
         let pointer_span = hitbox.as_ref().map(|hitbox| {
             open_pointer_span(
+                window,
                 hitbox.id,
                 self.element.global_id,
                 self.element.pseudo_events,
@@ -1796,7 +1878,7 @@ impl Element for ReactDivElement {
         let mut culled: Option<HashSet<usize>> = None;
         if !bounds_have_drawable_area(bounds) {
             if let Some(index) = pointer_span {
-                close_pointer_span(index);
+                close_pointer_span(window, index);
             }
             return DivPrepaintState {
                 hitbox,
@@ -1917,7 +1999,7 @@ impl Element for ReactDivElement {
         }
 
         if let Some(index) = pointer_span {
-            close_pointer_span(index);
+            close_pointer_span(window, index);
         }
         DivPrepaintState {
             hitbox,
@@ -2120,6 +2202,7 @@ impl Element for ReactDivElement {
         let press = self.element.listens("press") || self.element.listens("longPress");
         let press_in = self.element.listens("pressIn");
         let press_out = self.element.listens("pressOut");
+        let aux_click = self.element.listens("auxClick");
         let press_action = events_have_press_action(&self.element.events);
         let press_group = self.element.native_list_group.clone();
         let event_names = self.element.events.clone();
@@ -2152,7 +2235,8 @@ impl Element for ReactDivElement {
             || responder_termination_request
             || press
             || press_in
-            || press_out;
+            || press_out
+            || aux_click;
         let drop_files = self.element.listens("drop");
         drop(event_flags_trace);
         if drop_files {
@@ -2179,6 +2263,51 @@ impl Element for ReactDivElement {
             // a span exists for exactly the elements that got a hitbox, and every listener
             // below resolves through it.
             if pointer_span.is_some() {
+                if aux_click {
+                    let layout_bounds = bounds;
+                    window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, _cx| {
+                        if ev.button != MouseButton::Middle {
+                            return;
+                        }
+                        if phase == DispatchPhase::Capture {
+                            *AUX_PRESS_TARGET.lock().unwrap() = None;
+                            return;
+                        }
+                        if pointer_reaches(pointer_span, window) {
+                            let mut target = AUX_PRESS_TARGET.lock().unwrap();
+                            if target.is_none() {
+                                *target = Some(id);
+                            }
+                        }
+                    });
+                    window.on_mouse_event(move |ev: &MouseUpEvent, phase, window, _cx| {
+                        if phase != DispatchPhase::Bubble
+                            || ev.button != MouseButton::Middle
+                            || !pointer_reaches(pointer_span, window)
+                        {
+                            return;
+                        }
+                        let pressed_here = {
+                            let mut target = AUX_PRESS_TARGET.lock().unwrap();
+                            let here = *target == Some(id);
+                            if here {
+                                *target = None;
+                            }
+                            here
+                        };
+                        if pressed_here {
+                            emit_mouse_button_if(
+                                id,
+                                true,
+                                "auxClick",
+                                ev.button,
+                                ev.position,
+                                layout_bounds,
+                                ev.modifiers,
+                            );
+                        }
+                    });
+                }
                 if context_menu {
                     let layout_bounds = bounds;
                     window.on_mouse_event(move |ev: &MouseDownEvent, phase, window, _cx| {
@@ -2220,7 +2349,10 @@ impl Element for ReactDivElement {
                                     press_group_for_down
                                 );
                             }
-                            if press_action && active_target == Some(id) {
+                            if press_action
+                                && active_target == Some(id)
+                                && !press_drag_disabled(&press_group_for_down)
+                            {
                                 *ACTIVE_PRESS_DRAG.lock().unwrap() = Some(ActivePressDrag {
                                     start_id: id,
                                     group: press_group_for_down.clone(),

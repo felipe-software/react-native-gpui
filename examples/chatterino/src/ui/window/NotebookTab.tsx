@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import { Svg, Text, View, type LayoutChangeEvent, type MouseResponderEvent } from "react-native-gpui";
+import { HoverGlow } from "../common/HoverGlow";
+import { useButtonEffect } from "../common/useButtonEffect";
 import type { Fonts } from "../fonts";
 import { ICONS } from "../icons";
 import type { Rect } from "../layout/geometry";
@@ -27,8 +29,10 @@ const DOUBLE_CLICK_MS = 400;
 
 export function NotebookTab(props: Props) {
     const { title, state, live, showLive, closable, theme, fonts } = props;
-    const [hovered, setHovered] = useState(false);
+    const effect = useButtonEffect();
+    const hovered = effect.hovered;
     const [closeHovered, setCloseHovered] = useState(false);
+    const [size, setSize] = useState({ width: HEIGHT, height: HEIGHT });
     const pressed = useRef(false);
     const lastDown = useRef(0);
     const rect = useRef<Rect | null>(null);
@@ -48,6 +52,7 @@ export function NotebookTab(props: Props) {
         const { locationX, locationY } = event.nativeEvent;
         const onClose = showClose && locationX >= width - 21 && locationX < width - 5 && locationY >= 7 && locationY < 23;
         if (event.nativeEvent.pressDrag || onClose) return;
+        effect.press(event);
         pressed.current = true;
         const now = Date.now();
         const isDoubleClick = now - lastDown.current < DOUBLE_CLICK_MS;
@@ -57,6 +62,7 @@ export function NotebookTab(props: Props) {
     };
 
     const handleMove = (event: MouseResponderEvent) => {
+        effect.move(event);
         if (!pressed.current || !rect.current) return;
         const { pageX, pageY } = event.nativeEvent;
         const own = rect.current;
@@ -65,8 +71,10 @@ export function NotebookTab(props: Props) {
     };
 
     const handleLayout = (event: LayoutChangeEvent) => {
-        rect.current = event.nativeEvent.layout;
-        props.onLayout(event.nativeEvent.layout);
+        const layout = event.nativeEvent.layout;
+        rect.current = layout;
+        setSize((current) => (current.width === layout.width && current.height === layout.height ? current : { width: layout.width, height: layout.height }));
+        props.onLayout(layout);
     };
 
     return (
@@ -79,13 +87,14 @@ export function NotebookTab(props: Props) {
             nativeListGroup={`tab-${props.id}`}
             style={{ height: HEIGHT, minWidth: HEIGHT, maxWidth: 150, marginRight: 1, paddingLeft, paddingRight, paddingTop: textPadding, justifyContent: "center" }}
             onLayout={handleLayout}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseEnter={effect.enter}
+            onMouseLeave={effect.leave}
             onMouseDown={handleDown}
             onMouseMove={handleMove}
             onMouseUp={(event) => {
                 if (event.nativeEvent.pressDrag) return;
                 handleMove(event);
+                effect.release();
                 pressed.current = false;
             }}
             onContextMenu={(event) => props.onMenu(event.nativeEvent.pageX, event.nativeEvent.pageY)}
@@ -108,6 +117,16 @@ export function NotebookTab(props: Props) {
             <Text numberOfLines={1} style={{ color: colors.text, fontFamily: fonts.uiFamily, fontSize: fonts.uiSize, textAlign: "center" }}>
                 {title}
             </Text>
+            {selected ? null : (
+                <HoverGlow
+                    width={size.width}
+                    height={size.height}
+                    color={theme.tabs.regular.text}
+                    factor={effect.factor}
+                    pointer={effect.pointer}
+                    ripples={effect.ripples}
+                />
+            )}
             {showClose ? (
                 <View
                     testID={`tab-close-${props.id}`}

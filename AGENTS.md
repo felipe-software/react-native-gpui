@@ -67,8 +67,10 @@ TS surface: `ts/src/platform-services.ts` (`LocalStorage`, `Notifications`, `Sou
   host fn `__rngpui_platformCall({id, op, args})`; `rust/src/platform_services.rs` runs the op
   on its own thread and answers through `__rngpui_platformDone`, which `jsc::queue_class`
   files as an async completion. Ops: `notifications.show`, `sound.play`,
-  `processes.findRunning`, `storage.flush`. Add a service by adding an op there, not a new
-  host fn.
+  `processes.findRunning`, `storage.flush`, `clipboard.read`. Add a service by adding an op
+  there, not a new host fn. `clipboard.read` is the one op that hops to the main thread
+  (`Incoming::ClipboardRead` through `crate::send_incoming`), because the clipboard belongs
+  to the windowing system; `RNGPUI_FAKE_CLIPBOARD=<file>` reads and writes a file instead.
 - **localStorage** (`rust/src/storage.rs`). The React runtime gets the parsed file as
   `globalThis.__rngpuiStorage` in the env script, and every mutation crosses
   `__rngpui_storageWrite(["set"|"remove"|"clear", ...])` into a per-key pending map. A writer
@@ -111,6 +113,79 @@ Gates: `bun run conformance:local-storage`, `conformance:platform-services` (loc
 fake sound/notification sinks, a copied `sleep` as the probe process) and
 `conformance:animated-image` (`shot --keep`, `reshot`, `diff`, `get frames`), all in
 `bun run test`.
+
+## Secondary windows: `<Window>` (2026-11-08)
+
+`<Window>` (ts/src/Window.tsx) opens another GPUI window in the same `rngpui-service` and
+renders its children there through the same reconciler and JavaScriptCore runtime, so all
+windows share React state. Rust side: rust/src/windows.rs (registry, open/update/close,
+placement, activation, routing helpers); TS side: ts/src/window-host.ts (portal container,
+delta wire, lifecycle commands).
+
+- **One portal container per window.** `<Window>` is `createPortal(children, container)`;
+  the container's root has its own globalId. `resetAfterCommit` serializes the main
+  container and then every open window container; each window keeps its own
+  `sameTopLevelTree` check and delta caches (`sharedWireSources` is shared, because the
+  host keeps one file-id table). A window tree carries `$window: <id>` on its root and is
+  parsed against that window's own prior index (`PRIOR_WINDOW_TREE_INDEX`).
+- **Order.** The window opens in a layout effect (`windowOpen`), which runs after the commit
+  that serialized the main tree, so it pushes its own first tree right after the open
+  command. The host still holds a tree that arrives before its window (`PENDING_TREES`).
+  Unmount sends `windowClose`; the host drops the window, its input entities, webviews,
+  pointer spans, GIF wakes and registry files, then re-runs the union retain.
+- **Every window is a `ServiceApp`** (`window_id`, `role`, `chrome`). Main-only work stays
+  main-only: the paint-only / incremental flags, `anim_trace` frame counter (`get frames`),
+  frame_trace, inspector, perf HUD, AX sync, startup marks and the main registry record.
+  Secondary windows call `window.prepare_layout_frame(false, false)` every render: the
+  vendored taffy engine is only cleared there, so skipping it grows the tree forever.
+- **Per-window state that used to be global**: pointer spans (`div::with_pointer_frame`,
+  keyed by GPUI window id — a mouse event must be resolved against its own window's last
+  frame, not whichever window painted after it), macOS hit passthrough rects (keyed by
+  GPUIView), input entities and webviews (published per owner), ChatList GIF wakes.
+  Id-keyed state (scroll, chat lists, layout cache, tweens) stays global because globalIds
+  are unique, but **retain must use the union of every window's tree**
+  (`windows::retain_all_with`); retaining one window's ids drops the others' state.
+- **The pump** unwraps `Incoming::ForWindow` (debug requests with `"window": <id>`) and routes
+  node commands (`focusInput`, `chatList`, `scrollTo`, `eval`, …) to the window that owns
+  the node. Window-update failures go through `window_gone!()`: a closed secondary window
+  skips the message, only the main window closing stops the pump. `SetNodeStyle` and tween
+  ticks repaint only the windows that own the animated nodes.
+- **Keys.** One `intercept_keystrokes` serves every window and resolves the window's
+  `ServiceApp` (`windows::app_for`); Escape asks a `closeOnEscape` window to close.
+  `AppCommands` bindings are app-global, so they fire in whichever window has focus.
+  Modifier-only presses/releases come from the root frame's `on_modifiers_changed`.
+- **Closing.** The OS close button (`on_window_should_close` returns false), the Linux client
+  title bar's X, Escape and focus loss all emit `{ type: "window", event: "close", reason }`;
+  JS calls `onClose` and the unmount closes the window. Closing the main window quits.
+- **Activation.** Each window's `observe_window_activation` emits focus/blur; the app state
+  goes inactive only if no window is active 60 ms later (focus moving between two of our
+  windows deactivates one before the other activates).
+- **Linux.** Normal windows and dialogs draw the client frame when the compositor expects
+  client decorations (GNOME, headless Mutter); popups request client decorations and draw
+  nothing (frameless on KWin too). Wayland ignores `position`; X11 and macOS honor it. The
+  content area is 2px smaller than requested inside the client frame, as for the main
+  window (the 1px surface border).
+- **Debug socket**: `windows` lists them; any request takes `"window": <id>`;
+  `systemClose` emits the OS close request; `activate {active}` drives the activation path
+  (headless Mutter never focuses a window); `realModifiers {modifiers}` dispatches a real
+  `ModifiersChanged`; `realtap` takes `button` and `modifiers`. CLI: `rngpui get windows`,
+  `--window <id|main|testID|kind|title>` on get/do/trace/reshot.
+- **Capture**: a capture trigger file may say `window=<id>`; on Linux each window has
+  `<pid>.w<id>.json` (with `secondary: true`, `windowId`, `capture_request`) and answers
+  `<pid>.w<id>.capture`; continuous `RNGPUI_CAPTURE_PNG` also writes `<name>.window-<id>.png`.
+
+Gate: `bun run conformance:multi-window` (47 checks, Linux: it captures through the
+registry's per-window request files). It also covers `NativeClipboard.read`, `AppState`,
+modifier-only keys, `onAuxClick`, `transparent`, `nativePressDrag={false}` and the ChatList
+scroll API. Not done: macOS capture of secondary windows is unvalidated, AX children of
+secondary windows are not synced, and WebView inside a secondary window is untested.
+
+Small fixes landed alongside: `NativeLayout` overrides now clear the paint-only flag (a
+coalesced paint-only commit replayed the old layout and ignored the override — headless
+Mutter's startup appearance flip made `native-layout` fail every run); the JS dispatch
+plan delivers a batch's pointer moves before the release that follows them
+(`plan_dispatch`); `parse_css_color` knows `transparent` and every CSS named color
+(`borderColor: "transparent"` used to draw black, `color: "transparent"` white).
 
 ## Releasing into Team Machine
 

@@ -1,11 +1,14 @@
+import type { Settings } from "../api";
 import type { IrcMessage, IrcTags } from "../irc/message";
 import { badgeCategory } from "../badges/twitch";
+import type { Badge } from "../emotes/types";
+import { stylizeName } from "../filters/nicknames";
 import { messageTime, parseBadgeInfoTag, parseBadgeTag, parseTwitchEmotes, type TwitchBadge } from "../twitch/tags";
 import { normalizeHexColor, randomUserColor } from "../twitch/usercolor";
 import { threadLink } from "../links/internal";
 import { nextLocalId, PieceBuilder } from "./builder";
 import type { ChannelContext, GlobalContext } from "./context";
-import type { ChatMessage, MessageFlags, Tint } from "./model";
+import type { BadgeGroup, ChatMessage, MessageFlags, Tint } from "./model";
 import { addWords } from "./words";
 
 export type PrivmsgOptions = {
@@ -15,8 +18,36 @@ export type PrivmsgOptions = {
     allowIgnore: boolean;
 };
 
-export function stylizeUsername(login: string, localizedName: string | undefined): string {
-    return localizedName ? `${login}(${localizedName})` : login;
+const GRAY_NAME = "#999999";
+
+export function stylizeUsername(login: string, localizedName: string | undefined, global?: GlobalContext): string {
+    const mode = global?.settings?.usernameDisplayMode ?? "usernameAndLocalizedName";
+    return stylizeName(login, localizedName, mode, global?.nickname ?? (() => undefined));
+}
+
+const BADGE_GROUP_SETTINGS: Record<BadgeGroup, keyof Settings> = {
+    globalAuthority: "showBadgesGlobalAuthority",
+    predictions: "showBadgesPredictions",
+    channelAuthority: "showBadgesChannelAuthority",
+    subscription: "showBadgesSubscription",
+    vanity: "showBadgesVanity",
+    chatterino: "showBadgesChatterino",
+    ffz: "showBadgesFfz",
+    bttv: "showBadgesBttv",
+    seventv: "showBadgesSevenTV",
+};
+
+export function badgeGroupVisible(group: BadgeGroup | undefined, settings: Settings): boolean {
+    if (!group) return true;
+    return settings[BADGE_GROUP_SETTINGS[group]] !== false;
+}
+
+function userBadgeGroup(badge: Badge): BadgeGroup {
+    if (badge.key.startsWith("chatterino:")) return "chatterino";
+    if (badge.key.startsWith("betterttv:")) return "bttv";
+    if (badge.key.startsWith("ffz:")) return "ffz";
+    if (badge.key.startsWith("7tv:")) return "seventv";
+    return "vanity";
 }
 
 function stripLeadingReplyMention(tags: IrcTags, content: string): { content: string; offset: number } {
@@ -30,10 +61,11 @@ function stripLeadingReplyMention(tags: IrcTags, content: string): { content: st
     return { content: content.slice(offset), offset };
 }
 
-function usernameColor(tags: IrcTags): string | undefined {
+function usernameColor(tags: IrcTags, settings: Settings | undefined): string | undefined {
     const tagged = normalizeHexColor(tags.color);
     if (tagged) return tagged;
     const userId = tags["user-id"];
+    if (settings?.colorizeNicknames === false) return GRAY_NAME;
     return userId ? randomUserColor(userId) : undefined;
 }
 
@@ -45,21 +77,23 @@ function subscriberTooltip(base: string, badge: TwitchBadge, infos: Map<string, 
     return `${base} (${tierText}${months} months)`;
 }
 
-function appendTwitchBadges(builder: PieceBuilder, tags: IrcTags, channel: ChannelContext): string[] {
+function appendTwitchBadges(builder: PieceBuilder, tags: IrcTags, channel: ChannelContext, settings: Settings | undefined): string[] {
     const badges = parseBadgeTag(tags);
     const infos = parseBadgeInfoTag(tags);
+    const customMod = settings?.useCustomFfzModeratorBadges !== false;
+    const customVip = settings?.useCustomFfzVipBadges !== false;
     for (const badge of badges) {
-        if (badge.key === "moderator") {
+        if (badge.key === "moderator" && customMod) {
             const custom = channel.customModBadge();
             if (custom) {
-                builder.badge(custom);
+                builder.badge(custom, custom.tooltip, "channelAuthority");
                 continue;
             }
         }
-        if (badge.key === "vip") {
+        if (badge.key === "vip" && customVip) {
             const custom = channel.customVipBadge();
             if (custom) {
-                builder.badge(custom);
+                builder.badge(custom, custom.tooltip, "channelAuthority");
                 continue;
             }
         }
@@ -72,7 +106,7 @@ function appendTwitchBadges(builder: PieceBuilder, tags: IrcTags, channel: Chann
         else if (category === "predictions" && infos.has(badge.key)) {
             tooltip = `Predicted ${(infos.get(badge.key) ?? "").replace(/⸝/g, ",")}`;
         }
-        builder.badge(resolved, tooltip);
+        builder.badge(resolved, tooltip, category);
     }
     return badges.map((badge) => badge.key);
 }
@@ -93,7 +127,7 @@ function appendReply(
     const builder = new PieceBuilder();
     if (parent && !parent.flags.system) {
         const parentIsAction = !!parent.flags.action;
-        const name = stylizeUsername(parent.login, parent.localizedName);
+        const name = stylizeUsername(parent.login, parent.localizedName, global);
         const parentTint = (parent.userColor as Tint | undefined) ?? "text";
         const suffix = parentIsAction ? "" : ":";
         builder.text("Replying to", "system", { link: threadLink(rootId) });
@@ -135,8 +169,15 @@ function threadState(tags: IrcTags, login: string, channel: ChannelContext, glob
     if (!rootId || !global.selfLogin) return false;
     const self = global.selfLogin.toLowerCase();
     const parentLogin = (tags["reply-parent-user-login"] ?? "").toLowerCase();
-    if (login === self || parentLogin === self) channel.subscribeThread(rootId);
+    const participated = login === self || parentLogin === self;
+    const autoSubscribe = global.settings?.autoSubToParticipatedThreads !== false;
+    if (participated && autoSubscribe) channel.subscribeThread(rootId);
     return channel.isThreadSubscribed(rootId);
+}
+
+function rewardInfo(tags: IrcTags, message: ChatMessage): void {
+    const rewardId = tags["custom-reward-id"];
+    if (rewardId) message.rewardId = rewardId;
 }
 
 export function buildPrivmsg(
@@ -148,12 +189,15 @@ export function buildPrivmsg(
     const { tags } = irc;
     const nick = irc.nick || tags.login || "";
     const login = (options.isSubscription || !irc.nick ? tags.login || nick : nick).toLowerCase();
-    const stripped = stripLeadingReplyMention(tags, options.content);
+    const settings = global.settings;
+    const stripReply = settings?.stripReplyMention !== false && !settings?.hideReplyContext;
+    const stripped = stripReply ? stripLeadingReplyMention(tags, options.content) : { content: options.content, offset: 0 };
     const { ignores } = global;
-    const isIgnored = ignores.isIgnoredUser(login) || ignores.isBlocked(options.content);
+    const viewer = { isModerator: !!channel.isModerator?.(), isBroadcaster: !!channel.isBroadcaster?.() };
+    const isIgnored = ignores.isIgnoredUser(login, viewer) || ignores.isBlocked(options.content);
     if (options.allowIgnore && isIgnored) return undefined;
 
-    const color = usernameColor(tags);
+    const color = usernameColor(tags, settings);
     if (color) channel.setUserColor(login, color);
     const textTint: Tint = options.isAction && color ? (color as Tint) : "text";
     const flags: MessageFlags = {};
@@ -186,11 +230,14 @@ export function buildPrivmsg(
     appendReply(message, tags, channel, global, textTint);
 
     const builder = new PieceBuilder();
-    message.badges = appendTwitchBadges(builder, tags, channel);
+    message.badges = appendTwitchBadges(builder, tags, channel, settings);
+    message.twitchBadges = parseBadgeTag(tags);
+    message.badgeInfos = Object.fromEntries(parseBadgeInfoTag(tags));
+    rewardInfo(tags, message);
     const userId = tags["user-id"];
-    if (userId) for (const badge of channel.userBadges(userId)) builder.badge(badge);
+    if (userId) for (const badge of channel.userBadges(userId)) builder.badge(badge, badge.tooltip, userBadgeGroup(badge));
 
-    const nameText = stylizeUsername(localizedName ? login : displayName, localizedName);
+    const nameText = stylizeUsername(localizedName ? login : displayName, localizedName, global);
     const usernameTint = (color as Tint | undefined) ?? "text";
     builder.user(options.isAction ? nameText : `${nameText}:`, login, usernameTint, true);
 
@@ -202,6 +249,11 @@ export function buildPrivmsg(
         userColor: (name) => channel.userColor(name),
         cheermotes: channel.cheermotes(),
         bits: Number(tags.bits ?? 0) || 0,
+        isKnownChatter: channel.isKnownChatter ? (name) => !!channel.isKnownChatter?.(name) : undefined,
+        findAllUsernames: settings?.findAllUsernames,
+        lowercaseDomains: settings?.lowercaseDomains,
+        zeroWidthEmotes: settings?.enableZeroWidthEmotes,
+        stackBits: settings?.stackBits,
     });
     message.pieces = builder.pieces;
     message.text = replaced.content;
@@ -209,9 +261,10 @@ export function buildPrivmsg(
 
     const highlight = global.highlights.check({
         senderLogin: login,
-        content: replaced.content,
+        content: stripped.content,
         isSubscription: options.isSubscription,
         isSubscribedThread,
+        badges: message.twitchBadges,
     });
     if (highlight) {
         flags.highlighted = true;
@@ -219,6 +272,7 @@ export function buildPrivmsg(
         if (highlight.showInMentions) flags.showInMentions = true;
         const quiet = !!flags.historical;
         message.alert = { playSound: !quiet && highlight.playSound, windowAlert: !quiet && highlight.alert };
+        if (highlight.soundUrl) message.alert.soundUrl = highlight.soundUrl;
     }
     return message;
 }

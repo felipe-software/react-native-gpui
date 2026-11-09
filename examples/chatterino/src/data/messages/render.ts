@@ -1,13 +1,17 @@
 import type { ChatListElement, ChatListMessage } from "react-native-gpui";
-import type { ThemeName } from "../api";
+import type { Settings, ThemeName } from "../api";
+import { emojiUrl } from "../emotes/emoji";
 import type { Emote } from "../emotes/types";
 import {
+    colorOr,
     COLOR_ELEVATED,
     COLOR_FIRST_MESSAGE,
+    COLOR_SELF_HIGHLIGHT,
     COLOR_REDEEMED,
     COLOR_SUBSCRIPTION,
     COLOR_WATCH_STREAK,
 } from "../filters/highlights";
+import { badgeGroupVisible } from "./privmsg";
 import { channelLink } from "../links/internal";
 import { themePalette } from "../theme";
 import { blendColors, formatColor, normalizeColor, opaque, parseColor } from "../util/colors";
@@ -20,6 +24,9 @@ export type RenderOptions = {
     showBadges: boolean;
     showChannelName: boolean;
     hideModerated: boolean;
+    settings?: Settings;
+    streamerMode?: boolean;
+    ignoreHighlights?: boolean;
 };
 
 const tintCache = new Map<string, string | undefined>();
@@ -43,23 +50,40 @@ export function resolveTint(tint: Tint, theme: ThemeName): string | undefined {
     return resolved;
 }
 
-function emoteElement(emote: Emote, zeroWidth: boolean, noSpace = false): ChatListElement {
+function showsThumbnails(options: RenderOptions): boolean {
+    return options.settings?.emotesTooltipPreview !== "dontShow";
+}
+
+function emoteElement(emote: Emote, zeroWidth: boolean, noSpace: boolean, options: RenderOptions): ChatListElement {
+    if (options.settings?.enableEmoteImages === false) {
+        const text: ChatListElement = { kind: "text", text: emote.name };
+        if (noSpace) text.trailingSpace = false;
+        return text;
+    }
+    const style = options.settings?.emojiSet ?? "twitter";
+    const isEmoji = emote.provider === "emoji";
+    const url = isEmoji ? emojiUrl(emote.url, style) : emote.url;
     const element: ChatListElement = {
         kind: "emote",
         name: emote.name,
-        url: emote.url,
+        url,
         width: emote.width,
         height: emote.height,
         tooltip: emote.tooltip,
     };
-    if (emote.tooltipImage) element.tooltipImage = emote.tooltipImage;
+    const tooltipImage = emote.tooltipImage && isEmoji ? emojiUrl(emote.tooltipImage, style) : emote.tooltipImage;
+    if (tooltipImage && showsThumbnails(options)) element.tooltipImage = tooltipImage;
     if (emote.homePage) element.link = emote.homePage;
     if (zeroWidth) element.zeroWidth = true;
     if (noSpace) element.trailingSpace = false;
     return element;
 }
 
-function pieceElements(piece: Piece, options: RenderOptions, out: ChatListElement[]): void {
+function nextIsEmote(pieces: Piece[], index: number): boolean {
+    return pieces[index + 1]?.kind === "emote";
+}
+
+function pieceElements(piece: Piece, options: RenderOptions, out: ChatListElement[], beforeEmote = false): void {
     switch (piece.kind) {
         case "text": {
             const element: ChatListElement = { kind: "text", text: piece.text };
@@ -73,19 +97,29 @@ function pieceElements(piece: Piece, options: RenderOptions, out: ChatListElemen
             return;
         }
         case "user": {
-            const element: ChatListElement = { kind: "user", text: piece.text, login: piece.login, bold: !!piece.bold };
-            const color = resolveTint(piece.tint, options.theme);
+            const mention = piece.mention;
+            const colorMentions = options.settings?.colorUsernames !== false;
+            const boldMentions = options.settings?.boldUsernames !== false;
+            const tint = mention && !colorMentions ? mention.fallback : piece.tint;
+            const bold = mention ? boldMentions : !!piece.bold;
+            const element: ChatListElement = { kind: "user", text: piece.text, login: piece.login, bold };
+            const color = resolveTint(tint, options.theme);
             if (color) element.color = color;
             if (piece.noSpace) element.trailingSpace = false;
             out.push(element);
             return;
         }
-        case "emote":
-            out.push(emoteElement(piece.emote, false, !!piece.noSpace));
-            for (const layer of piece.layers ?? []) out.push(emoteElement(layer, true));
+        case "emote": {
+            const removeSpace = !!options.settings?.removeSpacesBetweenEmotes && beforeEmote;
+            const layers = piece.layers ?? [];
+            const lastIndex = layers.length;
+            out.push(emoteElement(piece.emote, false, !!piece.noSpace || (removeSpace && lastIndex === 0), options));
+            layers.forEach((layer, index) => out.push(emoteElement(layer, true, removeSpace && index === lastIndex - 1, options)));
             return;
+        }
         case "badge": {
             if (!options.showBadges) return;
+            if (options.settings && !badgeGroupVisible(piece.group, options.settings)) return;
             const { badge } = piece;
             const element: ChatListElement = {
                 kind: "badge",
@@ -95,7 +129,7 @@ function pieceElements(piece: Piece, options: RenderOptions, out: ChatListElemen
                 height: badge.height,
                 tooltip: piece.tooltip,
             };
-            if (badge.tooltipImage) element.tooltipImage = badge.tooltipImage;
+            if (badge.tooltipImage && showsThumbnails(options)) element.tooltipImage = badge.tooltipImage;
             if (badge.background) element.background = badge.background;
             out.push(element);
         }
@@ -104,25 +138,51 @@ function pieceElements(piece: Piece, options: RenderOptions, out: ChatListElemen
 
 function renderPieces(pieces: Piece[], options: RenderOptions): ChatListElement[] {
     const out: ChatListElement[] = [];
-    for (const piece of pieces) pieceElements(piece, options, out);
+    pieces.forEach((piece, index) => pieceElements(piece, options, out, nextIsEmote(pieces, index)));
     return out;
 }
 
-function highlightSource(message: ChatMessage): string | undefined {
+type FlagColors = { elevated?: string; firstMessage?: string; watchStreak?: string; subscription?: string; redeemed?: string };
+
+function flagColors(settings: Settings | undefined): FlagColors {
+    if (!settings) {
+        return {
+            elevated: COLOR_ELEVATED,
+            firstMessage: COLOR_FIRST_MESSAGE,
+            watchStreak: COLOR_WATCH_STREAK,
+            subscription: COLOR_SUBSCRIPTION,
+            redeemed: COLOR_REDEEMED,
+        };
+    }
+    const colors: FlagColors = {};
+    if (settings.enableElevatedMessageHighlight) colors.elevated = colorOr(settings.elevatedMessageHighlightColor, COLOR_ELEVATED);
+    if (settings.enableFirstMessageHighlight) colors.firstMessage = colorOr(settings.firstMessageHighlightColor, COLOR_FIRST_MESSAGE);
+    if (settings.enableWatchStreakHighlight) colors.watchStreak = colorOr(settings.watchStreakHighlightColor, COLOR_WATCH_STREAK);
+    if (settings.enableSubHighlight) colors.subscription = colorOr(settings.subHighlightColor, COLOR_SUBSCRIPTION);
+    if (settings.enableRedeemedHighlight) colors.redeemed = colorOr(settings.redeemedHighlightColor, COLOR_REDEEMED);
+    return colors;
+}
+
+function inlineWhisperColor(message: ChatMessage, settings: Settings | undefined): string | undefined {
+    if (!message.flags.receivedWhisper || !settings?.highlightInlineWhispers) return undefined;
+    return colorOr(settings.whisperHighlightColor, COLOR_SELF_HIGHLIGHT);
+}
+
+function highlightSource(message: ChatMessage, colors: FlagColors): string | undefined {
     const { flags } = message;
-    if (flags.elevated) return COLOR_ELEVATED;
-    if (flags.firstMessage) return COLOR_FIRST_MESSAGE;
-    if (flags.watchStreak) return COLOR_WATCH_STREAK;
+    if (flags.elevated && colors.elevated) return colors.elevated;
+    if (flags.firstMessage && colors.firstMessage) return colors.firstMessage;
+    if (flags.watchStreak && colors.watchStreak) return colors.watchStreak;
     if (flags.highlighted && message.highlightColor) return message.highlightColor;
-    if (flags.subscription) return COLOR_SUBSCRIPTION;
-    if (flags.redeemed) return COLOR_REDEEMED;
+    if (flags.subscription && colors.subscription) return colors.subscription;
+    if (flags.redeemed && colors.redeemed) return colors.redeemed;
     return undefined;
 }
 
 const backgroundCache = new Map<string, string | undefined>();
 
-function backgroundColor(message: ChatMessage, theme: ThemeName): string | undefined {
-    const source = highlightSource(message);
+function backgroundColor(message: ChatMessage, theme: ThemeName, colors: FlagColors, override?: string): string | undefined {
+    const source = highlightSource(message, colors) ?? override;
     if (!source) return undefined;
     const key = `${theme}|${source}`;
     if (backgroundCache.has(key)) return backgroundCache.get(key);
@@ -133,20 +193,35 @@ function backgroundColor(message: ChatMessage, theme: ThemeName): string | undef
     return blended;
 }
 
-function markerSource(message: ChatMessage): string | undefined {
+function markerSource(message: ChatMessage, colors: FlagColors): string | undefined {
     const { flags } = message;
     if (flags.highlighted && message.highlightColor) return message.highlightColor;
-    if (flags.watchStreak) return COLOR_WATCH_STREAK;
-    if (flags.subscription) return COLOR_SUBSCRIPTION;
-    if (flags.redeemed) return COLOR_REDEEMED;
-    if (flags.elevated) return COLOR_ELEVATED;
-    if (flags.firstMessage) return COLOR_FIRST_MESSAGE;
+    if (flags.watchStreak) return colors.watchStreak;
+    if (flags.subscription) return colors.subscription;
+    if (flags.redeemed) return colors.redeemed;
+    if (flags.elevated) return colors.elevated;
+    if (flags.firstMessage) return colors.firstMessage;
     return undefined;
 }
 
-function markerColor(message: ChatMessage): string | undefined {
-    const parsed = parseColor(markerSource(message));
+function markerColor(message: ChatMessage, colors: FlagColors): string | undefined {
+    const parsed = parseColor(markerSource(message, colors));
     return parsed ? formatColor(opaque(parsed)) : undefined;
+}
+
+function isHiddenModeration(message: ChatMessage, options: RenderOptions): boolean {
+    const settings = options.settings;
+    if (!settings || !message.flags.moderation) return false;
+    const isDeletion = !!message.timeoutUser?.startsWith("msg:");
+    if (isDeletion) return settings.hideDeletionActions;
+    const hideForStreamer = !!options.streamerMode && settings.streamerModeHideModActions;
+    return settings.hideModerationActions || hideForStreamer;
+}
+
+function isHidden(message: ChatMessage, options: RenderOptions): boolean {
+    if (message.flags.disabled && options.hideModerated) return true;
+    if (message.flags.similar && options.settings?.hideSimilar) return true;
+    return isHiddenModeration(message, options);
 }
 
 export function renderMessage(message: ChatMessage, options: RenderOptions): ChatListMessage {
@@ -162,13 +237,16 @@ export function renderMessage(message: ChatMessage, options: RenderOptions): Cha
         timestamp: formatTimestamp(message.time, options.timestampFormat),
         elements,
     };
-    if (message.reply && message.reply.length > 0) rendered.reply = renderPieces(message.reply, options);
-    const background = backgroundColor(message, options.theme);
+    const showReply = !options.settings?.hideReplyContext;
+    if (showReply && message.reply && message.reply.length > 0) rendered.reply = renderPieces(message.reply, options);
+    const colors = flagColors(options.settings);
+    const whisperColor = inlineWhisperColor(message, options.settings);
+    const background = options.ignoreHighlights ? undefined : backgroundColor(message, options.theme, colors, whisperColor);
     if (background) rendered.background = background;
-    const marker = markerColor(message);
+    const marker = options.settings?.hideScrollbarHighlights ? undefined : markerColor(message, colors);
     if (marker) rendered.marker = marker;
     if (message.flags.disabled) rendered.disabled = true;
-    if (message.flags.disabled && options.hideModerated) rendered.hidden = true;
+    if (isHidden(message, options)) rendered.hidden = true;
     if (message.flags.historical) rendered.historical = true;
     return rendered;
 }

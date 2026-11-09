@@ -31,3 +31,13 @@ describe("overlay stack", () => {
         expect(isModal(card)).toBe(false);
     });
 });
+
+describe("emote popup per split (SplitInput::openEmotePopup reuses it)", () => {
+    test("opening again for the same split replaces it, other splits keep theirs", () => {
+        let stack: Overlay[] = [];
+        stack = openOverlay(stack, { kind: "emotes", splitId: "a", channel: "x" }, "1");
+        stack = openOverlay(stack, { kind: "emotes", splitId: "b", channel: "y" }, "2");
+        stack = openOverlay(stack, { kind: "emotes", splitId: "a", channel: "x" }, "3");
+        expect(stack.map((overlay) => overlay.id)).toEqual(["2", "3"]);
+    });
+});

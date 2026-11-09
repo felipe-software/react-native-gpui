@@ -1,4 +1,4 @@
-use gpui::{MouseButton, Pixels, Point};
+use gpui::{Modifiers, MouseButton, Pixels, Point};
 use serde_json::{Map, Value, json};
 
 use super::model::ChatElement;
@@ -62,13 +62,22 @@ pub fn hover_payload(list: &ListState, target: &HitTarget) -> Option<Value> {
     Some(Value::Object(map))
 }
 
-pub fn emit_hover(id: u64, list: &ListState, target: Option<&HitTarget>) {
+pub fn emit_hover(
+    id: u64,
+    list: &ListState,
+    target: Option<&HitTarget>,
+    pointer: Option<Point<Pixels>>,
+) {
     if !list.listens_hover {
         return;
     }
-    let payload = target
+    let mut payload = target
         .and_then(|target| hover_payload(list, target))
         .unwrap_or(Value::Null);
+    if let (Value::Object(map), Some(pointer)) = (&mut payload, pointer) {
+        map.insert("pointerX".into(), json!(f32::from(pointer.x)));
+        map.insert("pointerY".into(), json!(f32::from(pointer.y)));
+    }
     crate::bridge::chat_list_event(id, HOVER_EVENT, payload);
 }
 
@@ -78,6 +87,7 @@ pub fn press_payload(
     position: Point<Pixels>,
     target: Option<&HitTarget>,
     seq: Option<i64>,
+    modifiers: Modifiers,
 ) -> Option<Value> {
     let button = button_label(button)?;
     let seq = target.map(|target| target.seq).or(seq)?;
@@ -89,6 +99,10 @@ pub fn press_payload(
     map.insert("button".into(), json!(button));
     map.insert("x".into(), json!(f32::from(position.x)));
     map.insert("y".into(), json!(f32::from(position.y)));
+    map.insert("shiftKey".into(), json!(modifiers.shift));
+    map.insert("ctrlKey".into(), json!(modifiers.control));
+    map.insert("altKey".into(), json!(modifiers.alt));
+    map.insert("metaKey".into(), json!(modifiers.platform));
     if let Some(target) = target
         && let Some(element) = element_for(&entry.message, target.part, target.element)
     {
@@ -107,8 +121,9 @@ pub fn emit_press(
     position: Point<Pixels>,
     target: Option<&HitTarget>,
     seq: Option<i64>,
+    modifiers: Modifiers,
 ) -> Option<Value> {
-    let payload = press_payload(list, button, position, target, seq)?;
+    let payload = press_payload(list, button, position, target, seq, modifiers)?;
     if list.listens_press {
         crate::bridge::chat_list_event(id, PRESS_EVENT, payload.clone());
     }

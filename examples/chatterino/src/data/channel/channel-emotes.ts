@@ -1,3 +1,4 @@
+import type { Settings } from "../api";
 import { badgeKey, loadChannelBadges, type BadgeMap } from "../badges/twitch";
 import { loadBttvChannel } from "../emotes/bttv";
 import { defaultCheermotes, type CheermoteSet } from "../emotes/cheermotes";
@@ -14,7 +15,42 @@ export type ChannelEmoteDeps = {
     globalBadges: () => BadgeMap;
     systemMessage: (text: string) => void;
     loadCheermotes?: (roomId: string) => Promise<CheermoteSet[] | undefined>;
+    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap>;
+    settings?: () => Settings;
 };
+
+export type EmoteToggles = Pick<
+    Settings,
+    | "enableFFZChannelEmotes"
+    | "enableBTTVChannelEmotes"
+    | "enableSevenTVChannelEmotes"
+    | "enableFFZGlobalEmotes"
+    | "enableBTTVGlobalEmotes"
+    | "enableSevenTVGlobalEmotes"
+    | "showUnlistedSevenTVEmotes"
+>;
+
+const ALL_ON: EmoteToggles = {
+    enableFFZChannelEmotes: true,
+    enableBTTVChannelEmotes: true,
+    enableSevenTVChannelEmotes: true,
+    enableFFZGlobalEmotes: true,
+    enableBTTVGlobalEmotes: true,
+    enableSevenTVGlobalEmotes: true,
+    showUnlistedSevenTVEmotes: false,
+};
+
+function pick(map: EmoteMap, name: string, enabled: boolean, showUnlisted: boolean): Emote | undefined {
+    if (!enabled) return undefined;
+    const emote = map.get(name);
+    if (!emote || (emote.unlisted && !showUnlisted)) return undefined;
+    return emote;
+}
+
+export function visibleEmotes(map: EmoteMap, enabled: boolean, showUnlisted: boolean): Emote[] {
+    if (!enabled) return [];
+    return [...map.values()].filter((emote) => !emote.unlisted || showUnlisted);
+}
 
 const FFZ_MODERATOR_BACKGROUND = "#34ae0a";
 
@@ -38,15 +74,21 @@ export class ChannelEmotes {
 
     constructor(private readonly deps: ChannelEmoteDeps) {}
 
+    private toggles(): EmoteToggles {
+        return this.deps.settings?.() ?? ALL_ON;
+    }
+
     lookup(name: string): Emote | undefined {
         const globals = this.deps.globals();
+        const t = this.toggles();
+        const unlisted = t.showUnlistedSevenTVEmotes;
         return (
-            this.ffz.get(name) ??
-            this.bttv.get(name) ??
-            this.seventv.get(name) ??
-            globals.ffz.get(name) ??
-            globals.bttv.get(name) ??
-            globals.seventv.get(name)
+            pick(this.ffz, name, t.enableFFZChannelEmotes, unlisted) ??
+            pick(this.bttv, name, t.enableBTTVChannelEmotes, unlisted) ??
+            pick(this.seventv, name, t.enableSevenTVChannelEmotes, unlisted) ??
+            pick(globals.ffz, name, t.enableFFZGlobalEmotes, unlisted) ??
+            pick(globals.bttv, name, t.enableBTTVGlobalEmotes, unlisted) ??
+            pick(globals.seventv, name, t.enableSevenTVGlobalEmotes, unlisted)
         );
     }
 
@@ -56,15 +98,22 @@ export class ChannelEmotes {
     }
 
     channelEmoteList(): Emote[] {
-        return [...this.ffz.values(), ...this.bttv.values(), ...this.seventv.values()];
+        const t = this.toggles();
+        const unlisted = t.showUnlistedSevenTVEmotes;
+        return [
+            ...visibleEmotes(this.ffz, t.enableFFZChannelEmotes, unlisted),
+            ...visibleEmotes(this.bttv, t.enableBTTVChannelEmotes, unlisted),
+            ...visibleEmotes(this.seventv, t.enableSevenTVChannelEmotes, unlisted),
+        ];
     }
 
     ready(): Promise<void> {
         return this.readyPromise;
     }
 
-    loadBadges(login: string): Promise<void> {
-        return loadChannelBadges(this.deps.fetch, login).then(
+    loadBadges(login: string, roomId?: string): Promise<void> {
+        const load = this.deps.loadBadges ? this.deps.loadBadges(login, roomId) : loadChannelBadges(this.deps.fetch, login);
+        return load.then(
             (badges) => {
                 this.badges = badges;
             },

@@ -54,9 +54,12 @@ pub fn select_backend() {
 }
 
 pub fn expects_client_decorations(requested: Option<gpui::WindowDecorations>) -> bool {
+    static SERVER_DECORATIONS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let client_requested = requested == Some(gpui::WindowDecorations::Client);
     match backend_name() {
-        "wayland" => client_requested || !wayland_offers_server_decorations(),
+        "wayland" => {
+            client_requested || !*SERVER_DECORATIONS.get_or_init(wayland_offers_server_decorations)
+        }
         _ => client_requested,
     }
 }

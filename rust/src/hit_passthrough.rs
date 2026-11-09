@@ -20,7 +20,8 @@
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
     use std::os::raw::c_char;
     use std::sync::Once;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,7 +48,8 @@ mod imp {
     }
 
     thread_local! {
-        static FRAME: RefCell<Vec<Rect>> = RefCell::new(Vec::new());
+        static FRAMES: RefCell<HashMap<usize, Vec<Rect>>> = RefCell::new(HashMap::new());
+        static CURRENT: Cell<usize> = const { Cell::new(0) };
         static ORDER: RefCell<u32> = RefCell::new(0);
     }
 
@@ -61,12 +63,19 @@ mod imp {
         INPUT_GRAB.store(grab, Ordering::Relaxed);
     }
 
-    /// Clear the per-frame rect registry and (once) install the `hitTest:` override.
-    /// Called at the top of the service render pass.
-    pub fn begin_frame() {
+    /// Clear this window's rect registry and (once) install the `hitTest:` override.
+    /// Called at the top of the service render pass with the window's GPUIView pointer.
+    pub fn begin_frame(view: usize) {
         install();
-        FRAME.with(|f| f.borrow_mut().clear());
+        CURRENT.set(view);
+        FRAMES.with(|f| f.borrow_mut().entry(view).or_default().clear());
         ORDER.with(|o| *o.borrow_mut() = 0);
+    }
+
+    pub fn forget_view(view: usize) {
+        FRAMES.with(|f| {
+            f.borrow_mut().remove(&view);
+        });
     }
 
     fn next_order() -> u32 {
@@ -82,8 +91,8 @@ mod imp {
             return;
         }
         let order = next_order();
-        FRAME.with(|f| {
-            f.borrow_mut().push(Rect {
+        FRAMES.with(|f| {
+            f.borrow_mut().entry(CURRENT.get()).or_default().push(Rect {
                 x,
                 y,
                 w,
@@ -109,11 +118,15 @@ mod imp {
         record(x, y, w, h, false);
     }
 
-    fn should_passthrough(x: f64, y: f64) -> bool {
-        FRAME.with(|f| {
+    fn should_passthrough(view: usize, x: f64, y: f64) -> bool {
+        FRAMES.with(|f| {
+            let frames = f.borrow();
+            let Some(rects) = frames.get(&view) else {
+                return false;
+            };
             let mut best_order: i64 = -1;
             let mut best_is_webview = false;
-            for r in f.borrow().iter() {
+            for r in rects.iter() {
                 if r.contains(x, y) && (r.order as i64) > best_order {
                     best_order = r.order as i64;
                     best_is_webview = r.is_webview;
@@ -124,7 +137,7 @@ mod imp {
     }
 
     pub fn native_underlay_at(x: f64, y: f64) -> bool {
-        should_passthrough(x, y)
+        should_passthrough(CURRENT.get(), x, y)
     }
 
     extern "C" fn hit_test(this: &Object, _sel: Sel, point: NSPoint) -> id {
@@ -173,7 +186,7 @@ mod imp {
                 bounds.size.height - local.y
             };
 
-            if should_passthrough(gx, gy) {
+            if should_passthrough(this as *const Object as usize, gx, gy) {
                 // decline so AppKit routes the event to the WKWebView host sibling below.
                 return nil;
             }
@@ -207,12 +220,14 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    begin_frame, native_underlay_at, record_native_control, record_occluder, record_webview,
-    set_input_grab,
+    begin_frame, forget_view, native_underlay_at, record_native_control, record_occluder,
+    record_webview, set_input_grab,
 };
 
 #[cfg(not(target_os = "macos"))]
-pub fn begin_frame() {}
+pub fn begin_frame(_view: usize) {}
+#[cfg(not(target_os = "macos"))]
+pub fn forget_view(_view: usize) {}
 #[cfg(not(target_os = "macos"))]
 pub fn record_webview(_x: f64, _y: f64, _w: f64, _h: f64) {}
 #[cfg(not(target_os = "macos"))]

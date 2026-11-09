@@ -11,7 +11,7 @@
 // identifier / nativeID / label / text / type, or `#<globalId>`, or `x,y`. `--json`
 // for machine output.
 
-import { attachHost, attachSession, closeSession, launchHost, type AttachedHost, type LaunchedHost } from "./host";
+import { attachHost, attachSession, closeSession, launchHost, scopeToWindow, type AttachedHost, type LaunchedHost } from "./host";
 import { runGet } from "./commands/get";
 import { runDo } from "./commands/do";
 import { runFlow } from "./commands/flow";
@@ -24,7 +24,7 @@ const HELP = `rngpui — react-native-gpui developer CLI
 
 usage:
   rngpui shot <--bundle app.js | --launch entry.tsx | --session dir> [--size WxH] [--appearance light|dark] [--select id ...] [--out png] [--fixture] [--keep]
-  rngpui reshot --session <dir> [--select id ...] [--out png]      sub-second re-capture of a kept session
+  rngpui reshot --session <dir> [--window <sel>] [--select id ...] [--out png]   sub-second re-capture of a kept session
   rngpui dev --launch <entry.tsx> [--root <dir> ...] [--size WxH]   launch once and Fast Refresh on edit
   rngpui dev --socket <control.sock> --build <cmd> --bundle <bundle.js> --root <dir>   Fast Refresh an owned external instance
   rngpui diff <before.png> <after.png> [--out highlight.png] [--threshold n]
@@ -57,8 +57,13 @@ target (pick one; defaults to --attach):
   --attach               attach to a running rngpui window; driveable only when
                          owner metadata advertises RNGPUI_CONTROL_SOCKET
   --size <WxH>           launched window size (default 1280x860)
+  --window <sel>         aim get/do/trace at one window: an id from \`get windows\`,
+                         main, a <Window testID>, a kind (dialog/popup/normal) or a
+                         title substring
 
 get (introspect — read-only):
+  get windows                    every window the service shows: id, kind, title,
+                                 testID, bounds, node count, frames painted
   get screen                     actionable visible-screen summary
   get tree                       full annotated node tree (bounds + ids)
   get stats [selector]           aggregate node counts, visibility, duplicate IDs,
@@ -135,6 +140,7 @@ function parseArgs(argv: string[]) {
         else if (a === "--launch") flags.launch = args[++i] ?? "";
         else if (a === "--bundle") flags.bundle = args[++i] ?? "";
         else if (a === "--session") flags.session = args[++i] ?? "";
+        else if (a === "--window") flags.window = args[++i] ?? "";
         else if (a === "--keep") flags.keep = true;
         else if (a === "--size") flags.size = args[++i] ?? "";
         else if (a === "--appearance") flags.appearance = args[++i] ?? "";
@@ -179,6 +185,7 @@ function shotFlags(flags: Record<string, string | boolean>, select: string[]): S
         bundle: flags.bundle !== undefined ? String(flags.bundle) : undefined,
         launch: flags.launch !== undefined ? String(flags.launch) : undefined,
         keep: flags.keep === true,
+        window: typeof flags.window === "string" && flags.window ? flags.window : undefined,
     };
 }
 
@@ -292,6 +299,9 @@ async function main(): Promise<number> {
         } else {
             // default + explicit --attach both land here
             host = await attachHost();
+        }
+        if (typeof flags.window === "string" && flags.window) {
+            host = await scopeToWindow(host, flags.window);
         }
 
         const code =

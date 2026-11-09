@@ -14,25 +14,36 @@ export type OverlaySpec =
     | { kind: "search"; splitId: string; channels: string[] }
     | { kind: "renameTab"; tabId: string }
     | { kind: "addAccount" }
-    | { kind: "confirm"; title: string; message: string; onConfirm: () => void; infoOnly?: boolean };
+    | { kind: "confirm"; title: string; message: string; onConfirm: () => void; infoOnly?: boolean }
+    | { kind: "thread"; splitId: string; channel: string; rootId: string; x?: number; y?: number }
+    | { kind: "splitPopup"; channel: string }
+    | { kind: "quickSwitcher" };
 
 export type Overlay = OverlaySpec & { id: string };
+
+export type TooltipBlock = { kind: "text"; text: string } | { kind: "image"; url: string; width: number; height: number };
 
 export type TooltipSpec = {
     owner: string;
     text: string;
     image?: string;
+    blocks?: TooltipBlock[];
     anchor: Rect;
     cursor?: { x: number; y: number };
     placement: "below" | "cursor";
 };
 
-const SINGLETONS = new Set<OverlaySpec["kind"]>(["settings", "menu", "selectChannel", "renameTab", "confirm", "addAccount"]);
+const SINGLETONS = new Set<OverlaySpec["kind"]>(["settings", "menu", "selectChannel", "renameTab", "confirm", "addAccount", "quickSwitcher"]);
+
+function replacesExisting(entry: Overlay, spec: OverlaySpec): boolean {
+    if (SINGLETONS.has(spec.kind)) return entry.kind === spec.kind;
+    if (spec.kind === "emotes") return entry.kind === "emotes" && entry.splitId === spec.splitId;
+    return false;
+}
 
 export function openOverlay(stack: Overlay[], spec: OverlaySpec, id: string): Overlay[] {
     const overlay = { ...spec, id } as Overlay;
-    const isSingleton = SINGLETONS.has(spec.kind);
-    const rest = isSingleton ? stack.filter((entry) => entry.kind !== spec.kind) : stack;
+    const rest = stack.filter((entry) => !replacesExisting(entry, spec));
     const withoutMenus = spec.kind === "menu" ? rest : rest.filter((entry) => entry.kind !== "menu");
     return [...withoutMenus, overlay];
 }

@@ -24,6 +24,18 @@ export const ChatList = forwardRef<ChatListHandle, ChatListProps>(function ChatL
             scrollToBottom() {
                 sendCommand({ $cmd: "chatList", id, op: "scrollToBottom" });
             },
+            scrollToTop() {
+                sendCommand({ $cmd: "chatList", id, op: "scrollToTop" });
+            },
+            scrollToMessage(messageId, options) {
+                sendCommand({ $cmd: "chatList", id, op: "scrollToMessage", messageId, align: options?.align });
+            },
+            pageUp() {
+                sendCommand({ $cmd: "chatList", id, op: "page", direction: -1 });
+            },
+            pageDown() {
+                sendCommand({ $cmd: "chatList", id, op: "page", direction: 1 });
+            },
         }),
         [id],
     );

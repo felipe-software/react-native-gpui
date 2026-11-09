@@ -1,11 +1,12 @@
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{
-    AbsoluteLength, AnyView, BoxShadow, Context, CursorStyle, Decorations, Edges, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels, Render, ResizeEdge,
-    SharedString, Size, Styled, Tiling, Window, WindowAppearance, WindowDecorations, div, point,
-    prelude::FluentBuilder as _, px, rgb, size,
+    AbsoluteLength, AnyView, App, BoxShadow, Context, CursorStyle, Decorations, Edges, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement, Pixels, Point, Render,
+    ResizeEdge, SharedString, Size, Styled, Tiling, Window, WindowAppearance, WindowDecorations,
+    div, point, prelude::FluentBuilder as _, px, rgb, size,
 };
 use gpui_component::{TITLE_BAR_HEIGHT, TitleBar};
 
@@ -47,8 +48,12 @@ pub fn set_app_tint(color: Option<Hsla>) {
     *APP_TINT.lock().unwrap_or_else(|error| error.into_inner()) = color;
 }
 
-fn client_tiling(window: &Window) -> Option<Tiling> {
-    if !CHROME.load(Ordering::Relaxed) {
+pub fn main_chrome() -> bool {
+    CHROME.load(Ordering::Relaxed)
+}
+
+fn client_tiling(window: &Window, chrome: bool) -> Option<Tiling> {
+    if !chrome {
         return None;
     }
     match window.window_decorations() {
@@ -57,8 +62,8 @@ fn client_tiling(window: &Window) -> Option<Tiling> {
     }
 }
 
-fn insets(window: &Window) -> Edges<Pixels> {
-    let Some(tiling) = client_tiling(window) else {
+fn insets(window: &Window, chrome: bool) -> Edges<Pixels> {
+    let Some(tiling) = client_tiling(window, chrome) else {
         return Edges::all(px(0.0));
     };
     let inset = |tiled: bool| if tiled { px(0.0) } else { SHADOW_INSET };
@@ -70,10 +75,10 @@ fn insets(window: &Window) -> Edges<Pixels> {
     }
 }
 
-pub fn content_size(window: &Window) -> Size<Pixels> {
+pub fn content_size(window: &Window, chrome: bool) -> Size<Pixels> {
     let viewport = window.viewport_size();
-    let insets = insets(window);
-    let title_bar = if client_tiling(window).is_some() {
+    let insets = insets(window, chrome);
+    let title_bar = if client_tiling(window, chrome).is_some() {
         TITLE_BAR_HEIGHT
     } else {
         px(0.0)
@@ -82,6 +87,16 @@ pub fn content_size(window: &Window) -> Size<Pixels> {
         (viewport.width - insets.left - insets.right).max(px(0.0)),
         (viewport.height - insets.top - insets.bottom - title_bar).max(px(0.0)),
     )
+}
+
+pub fn content_offset(window: &Window, chrome: bool) -> Point<Pixels> {
+    let insets = insets(window, chrome);
+    let title_bar = if client_tiling(window, chrome).is_some() {
+        TITLE_BAR_HEIGHT
+    } else {
+        px(0.0)
+    };
+    point(insets.left, insets.top + title_bar)
 }
 
 fn is_dark(appearance: WindowAppearance) -> bool {
@@ -150,16 +165,24 @@ fn resize_handle(edge: ResizeEdge, insets: Edges<Pixels>) -> impl IntoElement {
 }
 
 pub fn chrome_size(client_decorated: bool) -> Size<Pixels> {
-    if !client_decorated || !CHROME.load(Ordering::Relaxed) {
+    frame_size(client_decorated && CHROME.load(Ordering::Relaxed))
+}
+
+pub fn frame_size(chrome: bool) -> Size<Pixels> {
+    if !chrome {
         return size(px(0.0), px(0.0));
     }
     size(SHADOW_INSET * 2.0, SHADOW_INSET * 2.0 + TITLE_BAR_HEIGHT)
 }
 
+type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
 pub struct LinuxWindowFrame {
     content: AnyView,
     title: SharedString,
     appearance_override: Option<WindowAppearance>,
+    chrome: bool,
+    on_close: Option<CloseHandler>,
 }
 
 impl LinuxWindowFrame {
@@ -172,7 +195,29 @@ impl LinuxWindowFrame {
             content,
             title,
             appearance_override,
+            chrome: CHROME.load(Ordering::Relaxed),
+            on_close: None,
         }
+    }
+
+    pub fn secondary(
+        content: AnyView,
+        title: SharedString,
+        appearance_override: Option<WindowAppearance>,
+        chrome: bool,
+        on_close: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            content,
+            title,
+            appearance_override,
+            chrome,
+            on_close: Some(Rc::new(on_close)),
+        }
+    }
+
+    pub fn set_title(&mut self, title: SharedString) {
+        self.title = title;
     }
 }
 
@@ -182,7 +227,7 @@ impl Render for LinuxWindowFrame {
             .appearance_override
             .unwrap_or_else(|| window.appearance());
         let backdrop = backdrop(appearance);
-        let tiling = client_tiling(window);
+        let tiling = client_tiling(window, self.chrome);
         window.set_client_inset(if tiling.is_some() {
             SHADOW_INSET
         } else {
@@ -197,7 +242,11 @@ impl Render for LinuxWindowFrame {
         };
 
         let dark = is_dark(appearance);
-        let insets = insets(window);
+        let insets = insets(window, self.chrome);
+        let on_close = self.on_close.clone();
+        let title_bar = TitleBar::new().when_some(on_close, |title_bar, on_close| {
+            title_bar.on_close_window(move |_, window, cx| on_close(window, cx))
+        });
         let edge_color = rgb(if dark { DARK_EDGE } else { LIGHT_EDGE });
 
         let surface = div()
@@ -229,7 +278,7 @@ impl Render for LinuxWindowFrame {
             )
             .child(
                 div().absolute().top_0().left_0().right_0().child(
-                    TitleBar::new()
+                    title_bar
                         .bg(rgb(if dark {
                             DARK_TITLE_BAR
                         } else {

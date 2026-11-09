@@ -1,7 +1,8 @@
 /**
  * Non-component RN APIs: Platform, PixelRatio, useWindowDimensions.
  */
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { WindowContext } from "./window-context";
 import { sendCommand } from "./commands";
 import { Dimensions, type ScaledSize } from "./Dimensions";
 import {
@@ -22,11 +23,13 @@ export {
 } from "./colors";
 
 export function useWindowDimensions(): ScaledSize {
+    const windowContext = useContext(WindowContext);
     const [dims, setDims] = useState<ScaledSize>(() => Dimensions.get("window"));
     useEffect(() => {
         const sub = Dimensions.addEventListener("change", ({ window }) => setDims(window));
         return () => sub.remove();
     }, []);
+    if (windowContext) return { ...dims, width: windowContext.width, height: windowContext.height };
     return dims;
 }
 
@@ -110,11 +113,7 @@ export const BackHandler = {
     exitApp(): void {},
 };
 
-export const AppState = {
-    currentState: "active" as "active" | "background" | "inactive",
-    addEventListener: noopSub,
-    removeEventListener(): void {},
-};
+export { AppState, useAppState, useWindowFocused, type AppStateStatus, type AppStateEventType, type WindowFocusEvent } from "./app-state";
 
 function isAllowedExternalUrl(url: string): boolean {
     try {

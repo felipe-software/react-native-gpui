@@ -1,3 +1,4 @@
+import type { EmojiStyle } from "../api";
 import { EMOJI_DATA } from "./emoji-data";
 import type { Emote } from "./types";
 
@@ -92,4 +93,9 @@ export function emojiByShortCode(shortCode: string): Emote | undefined {
 
 export function emojiShortCodes(): Array<[string, Emote]> {
     return [...getIndex().byShortCode.entries()];
+}
+
+export function emojiUrl(url: string, style: EmojiStyle): string {
+    if (style === "twitter") return url;
+    return url.replace("/emoji-v2/img/twitter/", `/emoji-v2/img/${style}/`);
 }

@@ -141,6 +141,15 @@ export type BridgeEvent =
     | { type: "appearance"; colorScheme: "light" | "dark" }
     | { type: "rendererProvenance"; requestId: number; provenance: RendererProvenance }
     | {
+          type: "window";
+          windowId: number;
+          event: "open" | "resize" | "close" | "focus" | "blur";
+          width?: number;
+          height?: number;
+          reason?: "system" | "escape" | "blur" | "error";
+      }
+    | { type: "appState"; state: "active" | "inactive"; windowId: number | null }
+    | {
           type: "event";
           id: number;
           event: string;

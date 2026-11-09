@@ -298,6 +298,8 @@ export interface ViewProps extends AccessibilityProps, ViewStyle {
     onHoverIn?: (event: MouseResponderEvent) => void;
     onHoverOut?: (event: MouseResponderEvent) => void;
     onKeyPress?: (event: unknown) => void;
+    onKeyUp?: (event: KeyboardKeyEvent) => void;
+    onAuxClick?: (event: MouseResponderEvent) => void;
     onLayout?: (event: LayoutChangeEvent) => void;
     onDrop?: (event: { nativeEvent: { paths: string[] } }) => void;
     pointerEvents?: "auto" | "none" | "box-none" | "box-only";
@@ -307,7 +309,17 @@ export interface ViewProps extends AccessibilityProps, ViewStyle {
     nativeResize?: NativeResizeSpec;
     /** gpui-only: scope press-drag activation to descendants with the same group. */
     nativeListGroup?: string;
+    nativePressDrag?: boolean;
 }
+
+export type KeyboardKeyEvent = {
+    key: string;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    altKey: boolean;
+    metaKey: boolean;
+    nativeEvent: { key: string; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean };
+};
 
 export type NativeResizeEdge = "left" | "right" | "top" | "bottom";
 

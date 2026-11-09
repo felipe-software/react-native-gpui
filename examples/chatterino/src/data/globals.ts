@@ -1,9 +1,9 @@
-import type { Account, EmoteInfo } from "./api";
+import type { Account, EmoteInfo, EmojiStyle } from "./api";
 import { loadBttvBadges, loadChatterinoBadges, type UserBadgeMap } from "./badges/thirdparty";
-import { loadGlobalBadges, type BadgeMap } from "./badges/twitch";
-import type { GlobalEmoteSets } from "./channel/channel-emotes";
+import { loadGlobalBadges, parseIvrBadges, type BadgeMap } from "./badges/twitch";
+import { visibleEmotes, type EmoteToggles, type GlobalEmoteSets } from "./channel/channel-emotes";
 import { loadBttvGlobal } from "./emotes/bttv";
-import { emojiShortCodes } from "./emotes/emoji";
+import { emojiShortCodes, emojiUrl } from "./emotes/emoji";
 import { loadFfzGlobal } from "./emotes/ffz";
 import { loadSeventvGlobal } from "./emotes/seventv";
 import { twitchEmote } from "./emotes/twitch";
@@ -11,7 +11,7 @@ import { toEmoteInfo, type Emote } from "./emotes/types";
 import { Helix } from "./twitch/helix";
 import type { FetchLike } from "./util/http";
 
-type HelixEmote = { id: string; name: string; emote_type?: string; format?: string[] };
+type HelixEmote = { id: string; name: string; emote_type?: string; format?: string[]; owner_id?: string; emote_set_id?: string };
 
 function scopeOf(emoteType: string | undefined): Emote["scope"] {
     if (emoteType === "subscriptions" || emoteType === "bitstier") return "subscriber";
@@ -25,8 +25,12 @@ function helixEmote(entry: HelixEmote): Emote {
     const animated = entry.format?.includes("animated") ?? false;
     const emote: Emote = { ...base, scope };
     if (animated) emote.animated = true;
+    if (entry.owner_id && entry.owner_id !== "0" && entry.owner_id !== "twitch") emote.ownerId = entry.owner_id;
+    if (entry.emote_set_id) emote.setId = entry.emote_set_id;
     return emote;
 }
+
+
 
 export class GlobalResources {
     emotes: GlobalEmoteSets = { ffz: new Map(), bttv: new Map(), seventv: new Map() };
@@ -69,11 +73,37 @@ export class GlobalResources {
         return this.readyPromise;
     }
 
+    async loadGlobalBadges(account: Account | undefined): Promise<void> {
+        if (!account) return;
+        try {
+            const sets = await new Helix(this.fetchFn, account).globalBadges();
+            const map = parseIvrBadges(sets);
+            if (map.size > 0) this.badges = map;
+        } catch (error) {
+            console.warn("failed to load Twitch global badges from Helix", error);
+        }
+    }
+
+    async loadUserEmotes(account: Account | undefined): Promise<boolean> {
+        if (!account) return false;
+        try {
+            const entries = await new Helix(this.fetchFn, account).userEmotes(account.userId);
+            const collected = new Map<string, Emote>();
+            for (const entry of entries) if (!collected.has(entry.name)) collected.set(entry.name, helixEmote(entry));
+            this.twitchEmotes = [...collected.values()];
+            return true;
+        } catch (error) {
+            console.warn("failed to load your Twitch emotes", error);
+            return false;
+        }
+    }
+
     async loadTwitchEmotes(account: Account | undefined, emoteSets: string[]): Promise<void> {
         if (!account) {
             this.twitchEmotes = [];
             return;
         }
+        if (await this.loadUserEmotes(account)) return;
         const helix = new Helix(this.fetchFn, account);
         const collected = new Map<string, Emote>();
         try {
@@ -94,14 +124,19 @@ export class GlobalResources {
         this.twitchEmotes = [...collected.values()];
     }
 
-    emoteInfos(): EmoteInfo[] {
+    emoteInfos(toggles?: EmoteToggles, emojiStyle: EmojiStyle = "twitter"): EmoteInfo[] {
+        const unlisted = !!toggles?.showUnlistedSevenTVEmotes;
         const own = [
             ...this.twitchEmotes,
-            ...this.emotes.bttv.values(),
-            ...this.emotes.ffz.values(),
-            ...this.emotes.seventv.values(),
+            ...visibleEmotes(this.emotes.bttv, toggles?.enableBTTVGlobalEmotes ?? true, unlisted),
+            ...visibleEmotes(this.emotes.ffz, toggles?.enableFFZGlobalEmotes ?? true, unlisted),
+            ...visibleEmotes(this.emotes.seventv, toggles?.enableSevenTVGlobalEmotes ?? true, unlisted),
         ].map(toEmoteInfo);
         if (!this.emojiInfos) this.emojiInfos = emojiShortCodes().map(([, emote]) => toEmoteInfo(emote));
-        return [...own, ...this.emojiInfos];
+        const emoji =
+            emojiStyle === "twitter"
+                ? this.emojiInfos
+                : this.emojiInfos.map((info) => ({ ...info, url: emojiUrl(info.url, emojiStyle), tooltipImage: info.tooltipImage && emojiUrl(info.tooltipImage, emojiStyle) }));
+        return [...own, ...emoji];
     }
 }

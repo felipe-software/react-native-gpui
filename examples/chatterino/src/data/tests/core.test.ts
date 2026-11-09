@@ -1,7 +1,9 @@
+import { DEFAULT_PING_SOUND } from "../assets";
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { ChannelEvent } from "../api";
 import { createChatCore } from "../core";
 import { memoryStorage, STORAGE_KEYS } from "../persistence";
+import type { PlatformHooks } from "../platform";
 import api from "./fixtures/api.json";
 import { LINES, RECORDED } from "./fixtures/lines";
 import { FakeSocket, flushPromises, manualTimers, routedFetch, texts, type FetchRoute } from "./helpers";
@@ -12,9 +14,13 @@ const VALIDATE: FetchRoute = (url, init) => {
     return { body: { client_id: "client123", login: "mylogin", user_id: "999", scopes: ["chat:read", "chat:edit"], expires_in: 5000 } };
 };
 
+const HELIX_EMPTY: FetchRoute = (url, init) =>
+    url.startsWith("https://api.twitch.tv/helix/") && (init?.method ?? "GET") === "GET" ? { body: { data: [] } } : undefined;
+
 function routes(history: string[] = []): FetchRoute[] {
     return [
         VALIDATE,
+        HELIX_EMPTY,
         (url) => (url.includes("recent-messages.robotty.de") ? { body: { messages: history, error: null, error_code: null } } : undefined),
         (url) => (url.startsWith("https://api.ivr.fi/v2/twitch/user?login=") ? { body: api.users.filter((user) => url.includes(user.login)) } : undefined),
         (url) => (url.startsWith("https://api.ivr.fi/v2/twitch/badges/global") ? { body: api.badgesGlobal } : undefined),
@@ -28,7 +34,7 @@ function routes(history: string[] = []): FetchRoute[] {
     ];
 }
 
-function setup(history: string[] = []) {
+function setup(history: string[] = [], extraPlatform: Partial<PlatformHooks> = {}) {
     const timers = manualTimers();
     const fetch = routedFetch(routes(history));
     const storage = memoryStorage();
@@ -42,6 +48,7 @@ function setup(history: string[] = []) {
         platform: {
             playSound: (name) => sounds.push(name),
             notify: (title, body) => notifications.push([title, body]),
+            ...extraPlatform,
         },
     });
     return { core, timers, fetch, storage, sounds, notifications };
@@ -245,7 +252,28 @@ describe("accounts and sending", () => {
         await settle(timers);
         expect(core.mentions.snapshot().map((message) => message.id)).toEqual(["ping-1"]);
         expect(texts(core.mentions.snapshot()[0].elements)).toStartWith("#forsen Pinger:");
-        expect(sounds).toEqual(["ping"]);
+        expect(sounds).toEqual([DEFAULT_PING_SOUND]);
+        core.dispose();
+    });
+
+    test("highlight sounds wait for the app to lose focus unless always-play is on", async () => {
+        const { core, timers, sounds } = setup([], { isAppActive: () => true });
+        lastSocket().open();
+        await core.addAccount("oauth:goodtoken");
+        const [, read, write] = FakeSocket.instances;
+        read.open();
+        write.open();
+        read.receive(LINES.welcome);
+        write.receive(LINES.welcome);
+        core.join("forsen");
+        const mention = LINES.privmsgSelfMention.replace("MyLogin", "mylogin");
+        read.receive(mention);
+        await settle(timers);
+        expect(sounds).toEqual([]);
+        core.settings.set((current) => ({ ...current, highlightAlwaysPlaySound: true }));
+        read.receive(mention.replace("ping-1", "ping-2"));
+        await settle(timers);
+        expect(sounds).toEqual([DEFAULT_PING_SOUND]);
         core.dispose();
     });
 

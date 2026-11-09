@@ -16,10 +16,29 @@ use crate::style::ElementStyle;
 // here each render so the (stateless) input element can resolve its entity by id.
 thread_local! {
     static ENTITIES: RefCell<HashMap<u64, Entity<InputState>>> = RefCell::new(HashMap::new());
+    static OWNED: RefCell<HashMap<u64, Vec<u64>>> = RefCell::new(HashMap::new());
 }
 
-pub fn set_entities(map: HashMap<u64, Entity<InputState>>) {
-    ENTITIES.with(|e| *e.borrow_mut() = map);
+pub fn set_entities(owner: u64, map: HashMap<u64, Entity<InputState>>) {
+    let ids: Vec<u64> = map.keys().copied().collect();
+    let previous = OWNED.with_borrow_mut(|owned| owned.insert(owner, ids));
+    ENTITIES.with_borrow_mut(|entities| {
+        for id in previous.unwrap_or_default() {
+            if !map.contains_key(&id) {
+                entities.remove(&id);
+            }
+        }
+        entities.extend(map);
+    });
+}
+
+pub fn forget_owner(owner: u64) {
+    let previous = OWNED.with_borrow_mut(|owned| owned.remove(&owner));
+    ENTITIES.with_borrow_mut(|entities| {
+        for id in previous.unwrap_or_default() {
+            entities.remove(&id);
+        }
+    });
 }
 
 fn entity(id: u64) -> Option<Entity<InputState>> {
