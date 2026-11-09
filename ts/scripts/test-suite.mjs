@@ -57,7 +57,6 @@ const tasks = [
     { name: "inspector", platforms: ["darwin"], command: "node", args: ["scripts/inspector-conformance.mjs"], cwd: root, timeoutMs: 12_000 },
     { name: "hit-test", command: "node", args: ["scripts/hit-test-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
     { name: "occlusion", command: "node", args: ["scripts/overlay-occlusion-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
-    { name: "chat-list", command: "node", args: ["scripts/chat-list-conformance.mjs"], cwd: root, timeoutMs: 60_000 },
     { name: "multi-window", platforms: ["linux"], command: "node", args: ["scripts/multi-window-conformance.mjs"], cwd: root, timeoutMs: 90_000 },
     { name: "reload", command: "node", args: ["scripts/reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },
     { name: "hot-reload", command: "node", args: ["scripts/hot-reload-conformance.mjs"], cwd: root, timeoutMs: 18_000 },

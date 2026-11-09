@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use gpui::{
@@ -81,6 +81,7 @@ mod linux_frame;
 mod linux_window_registry;
 #[cfg(target_os = "macos")]
 mod liquid_glass;
+pub mod native_element;
 mod native_menu;
 mod notifications;
 mod perf_hud;
@@ -628,10 +629,9 @@ fn parse_json_tree(
                     .unwrap_or(100_000),
             )))
         }
-        elements::chat_list::ELEMENT_TYPE => Some(SpecializedElement::ChatList(
-            elements::chat_list::ChatListOptions::parse(obj.get("chatList")),
-        )),
-        _ => None,
+        "div" => None,
+        other => native_element::parse_props(other, obj.get("nativeProps"))
+            .map(SpecializedElement::Native),
     }
     .map(Arc::new);
     Some(Arc::new(ReactElement {
@@ -1392,9 +1392,9 @@ impl ServiceApp {
         }
         match (
             self.input_selection_at,
-            elements::chat_list::selection_changed_at(),
+            native_element::selection_changed_at(),
         ) {
-            (Some(input_at), Some(chat_at)) => input_at > chat_at,
+            (Some(input_at), Some(native_at)) => input_at > native_at,
             (_, None) => true,
             (None, Some(_)) => false,
         }
@@ -1474,7 +1474,7 @@ struct TreeMetadata {
     system_ids: HashSet<u64>,
     native_control_ids: HashSet<u64>,
     diff_ids: HashSet<u64>,
-    chat_list_ids: HashSet<u64>,
+    native_element_ids: BTreeMap<usize, HashSet<u64>>,
     scroll_ids: HashSet<u64>,
 }
 
@@ -1496,7 +1496,7 @@ impl TreeMetadata {
         elements::system::retain_system_views(&self.system_ids);
         elements::native_control::retain_native_controls(&self.native_control_ids);
         elements::retain_diff_state(&self.diff_ids);
-        elements::chat_list::retain(&self.chat_list_ids);
+        native_element::retain(&self.native_element_ids);
         elements::retain_scroll_state(&self.scroll_ids);
         elements::native_scroll::retain_drivers(&self.scroll_ids);
 
@@ -1522,8 +1522,12 @@ impl TreeMetadata {
         self.native_control_ids
             .extend(other.native_control_ids.iter().copied());
         self.diff_ids.extend(other.diff_ids.iter().copied());
-        self.chat_list_ids
-            .extend(other.chat_list_ids.iter().copied());
+        for (kind, ids) in &other.native_element_ids {
+            self.native_element_ids
+                .entry(*kind)
+                .or_default()
+                .extend(ids.iter().copied());
+        }
         self.scroll_ids.extend(other.scroll_ids.iter().copied());
     }
 
@@ -1723,8 +1727,11 @@ fn collect_tree_metadata(el: &Arc<ReactElement>, inherited_hidden: bool, out: &m
     if el.element_type == "diff" {
         out.diff_ids.insert(el.global_id);
     }
-    if el.element_type == elements::chat_list::ELEMENT_TYPE {
-        out.chat_list_ids.insert(el.global_id);
+    if let Some(kind) = el.native_kind() {
+        out.native_element_ids
+            .entry(kind)
+            .or_default()
+            .insert(el.global_id);
     }
     if matches!(el.style.overflow.as_deref(), Some("scroll") | Some("auto")) {
         out.scroll_ids.insert(el.global_id);
@@ -2342,7 +2349,7 @@ impl Render for ServiceApp {
             })
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::Copy, _window, cx| {
-                    let Some(text) = elements::chat_list::selected_text() else {
+                    let Some(text) = native_element::selected_text() else {
                         return;
                     };
                     if this.focused_input_selection_wins(cx) {
@@ -2686,14 +2693,15 @@ pub(crate) enum Incoming {
     AppTint {
         color: Option<gpui::Hsla>,
     },
-    ChatList {
+    NativeCommand {
+        kind: usize,
         id: u64,
-        op: elements::chat_list::ChatListOp,
+        command: native_element::NativeCommand,
     },
-    DebugChatListState {
-        id: Option<u64>,
-        images: bool,
-        timings: bool,
+    DebugNativeElement {
+        kind: usize,
+        name: String,
+        request: serde_json::Value,
         reply: flume::Sender<serde_json::Value>,
     },
     DebugRealScroll {
@@ -3067,9 +3075,8 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
                 y: v.get("y").and_then(|x| x.as_f64()).map(|x| x as f32),
             }),
             "scrollToEnd" => id.map(|id| Incoming::ScrollToEnd { id }),
-            "chatList" => {
-                elements::chat_list::parse_command(v).map(|(id, op)| Incoming::ChatList { id, op })
-            }
+            "nativeCommand" => native_element::parse_command(v)
+                .map(|(kind, id, command)| Incoming::NativeCommand { kind, id, command }),
             "nativeLayout" => {
                 let key = v.get("key").and_then(|x| x.as_str())?;
                 Some(Incoming::NativeLayout {
@@ -3567,7 +3574,7 @@ fn route_target(msg: &Incoming, cx: &App) -> Option<u64> {
         | Incoming::Reload { id }
         | Incoming::ScrollTo { id, .. }
         | Incoming::ScrollToEnd { id }
-        | Incoming::ChatList { id, .. } => windows::owner_of_node(*id, cx),
+        | Incoming::NativeCommand { id, .. } => windows::owner_of_node(*id, cx),
         Incoming::BlurInput => windows::window_with_focused_input(cx),
         Incoming::NativeContextMenu(_) => windows::last_pointer_window(),
         _ => None,
@@ -3576,7 +3583,7 @@ fn route_target(msg: &Incoming, cx: &App) -> Option<u64> {
 
 fn reply_sender(msg: &Incoming) -> Option<flume::Sender<serde_json::Value>> {
     match msg {
-        Incoming::DebugChatListState { reply, .. }
+        Incoming::DebugNativeElement { reply, .. }
         | Incoming::DebugRealScroll { reply, .. }
         | Incoming::DebugClipboard { reply }
         | Incoming::DebugDump { reply }
@@ -3851,7 +3858,8 @@ fn redirect_stdio_to_log() {
     std::mem::forget(file);
 }
 
-fn main() {
+pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
+    native_element::install(native_elements);
     #[cfg(target_os = "linux")]
     linux_display::select_backend();
     // launched as CFBundleExecutable, LaunchServices gives cwd `/`; RNGPUI_CWD restores the
@@ -5630,26 +5638,29 @@ fn main() {
                         dy,
                         reply,
                     } => {
-                        let chat_list = pump
-                            .read_with(cx, |this, _| inspector::chat_list_at(&this.root, x, y))
+                        let native_target = pump
+                            .read_with(cx, |this, _| inspector::native_element_at(&this.root, x, y))
                             .ok()
                             .flatten();
-                        if let Some(id) = chat_list {
-                            let applied = window_handle
+                        let native_scroll = native_target.and_then(|(kind, id)| {
+                            let moved = window_handle
                                 .update(cx, |_root, window, _cx| {
-                                    let applied = elements::chat_list::scroll_list(id, dy, window);
-                                    if applied {
-                                        crate::anim_overlay::arm_paint_only_frame();
+                                    let moved = native_element::scroll_by(kind, id, dx, dy, window);
+                                    if moved == Some(true) {
                                         window.refresh();
                                     }
-                                    applied
+                                    moved
                                 })
-                                .unwrap_or(false);
+                                .ok()
+                                .flatten()?;
+                            Some((id, moved))
+                        });
+                        if let Some((id, moved)) = native_scroll {
                             let _ = reply.send(serde_json::json!({
                                 "ok": true,
                                 "type": "scrollAt",
                                 "targetId": id,
-                                "moved": applied,
+                                "moved": moved,
                             }));
                             continue;
                         }
@@ -6153,11 +6164,13 @@ fn main() {
                         let applied = window_handle.update(cx, |_root, window, cx| {
                             pump.update(cx, |this, cx| {
                                 let target = inspector::tap_target_at(&this.root, x, y);
-                                if let Some(chat_target) =
-                                    target.as_ref().filter(|target| target.chat_list)
-                                {
-                                    let pressed = elements::chat_list::debug_tap(
-                                        chat_target.id,
+                                let native_target = target
+                                    .as_ref()
+                                    .and_then(|target| Some((target.native_kind?, target.id)));
+                                if let Some((kind, id)) = native_target {
+                                    let pressed = native_element::debug_tap(
+                                        kind,
+                                        id,
                                         x,
                                         y,
                                         MouseButton::Left,
@@ -6166,9 +6179,9 @@ fn main() {
                                     let _ = reply.send(serde_json::json!({
                                         "ok": true,
                                         "type": "tap",
-                                        "targetId": chat_target.id,
+                                        "targetId": id,
                                         "focusedInput": false,
-                                        "chatListPress": pressed,
+                                        "nativePress": pressed,
                                     }));
                                 } else if let Some(target) = target {
                                     // a native AppKit control (NSButton) takes the real
@@ -6356,18 +6369,17 @@ fn main() {
                                 crate::anim_overlay::arm_paint_only_frame();
                                 cx.notify();
                             }
-                            Incoming::ChatList { id, op } => {
-                                elements::chat_list::apply(id, op);
-                                crate::anim_overlay::arm_paint_only_frame();
+                            Incoming::NativeCommand { kind, id, command } => {
+                                native_element::apply_command(kind, id, command);
                                 cx.notify();
                             }
-                            Incoming::DebugChatListState {
-                                id,
-                                images,
-                                timings,
+                            Incoming::DebugNativeElement {
+                                kind,
+                                name,
+                                request,
                                 reply,
                             } => {
-                                let _ = reply.send(elements::chat_list::state_json(id, images, timings));
+                                let _ = reply.send(native_element::debug_command(kind, &name, &request));
                             }
                             Incoming::DebugClipboard { reply } => {
                                 #[cfg(target_os = "macos")]

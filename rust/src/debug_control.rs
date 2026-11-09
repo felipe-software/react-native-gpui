@@ -238,18 +238,6 @@ fn incoming_for_command(value: &Value, reply: Sender<Value>) -> Result<Incoming,
             reply,
         }),
         "dump" => Ok(Incoming::DebugDump { reply }),
-        "chatListState" => Ok(Incoming::DebugChatListState {
-            id: value.get("id").and_then(Value::as_u64),
-            images: value
-                .get("images")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            timings: value
-                .get("timings")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            reply,
-        }),
         "clipboard" => Ok(Incoming::DebugClipboard { reply }),
         "realscroll" => Ok(Incoming::DebugRealScroll {
             x: number(value, "x")?,
@@ -508,7 +496,15 @@ fn incoming_for_command(value: &Value, reply: Sender<Value>) -> Result<Incoming,
                 .to_string(),
             reply,
         }),
-        _ => Err("unknown debug command"),
+        name => match crate::native_element::debug_kind(name) {
+            Some(kind) => Ok(Incoming::DebugNativeElement {
+                kind,
+                name: name.to_string(),
+                request: value.clone(),
+                reply,
+            }),
+            None => Err("unknown debug command"),
+        },
     }
 }
 

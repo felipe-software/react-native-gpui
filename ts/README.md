@@ -123,7 +123,7 @@ re-renders.
 
 | Layout / display | Input / touch | Lists | Native content |
 | --- | --- | --- | --- |
-| `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` `ChatList` | `Image` `Svg` `WebView` |
+| `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` | `Image` `Svg` `WebView` |
 
 APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `NativeClipboard`, `fetch`, `crypto`, `ImageCache`).
 
@@ -196,7 +196,7 @@ Inside a window, `useWindowDimensions()` returns that window's size and
 `focus()`.
 
 - Each window has its own hit testing, focus, keyboard shortcuts (`AppCommands` bindings
-  fire in whichever window has focus), text inputs, `ChatList`s, theme, layout and frame
+  fire in whichever window has focus), text inputs, native elements, theme, layout and frame
   pacing: a window repaints only when its own tree, input or animation changes, and the
   main window keeps its retained-layout fast path while secondary windows lay out in full.
 - Wayland does not let a client place its toplevel windows, so `position` is ignored
@@ -214,7 +214,7 @@ Inside a window, `useWindowDimensions()` returns that window's size and
 `useAppState()` follow it. `AppState.addEventListener("windowFocus", ({ windowId, focused }))`
 reports each window, the main window as id 0.
 
-`bun run conformance:multi-window` opens a dialog, a window with a `ChatList` and a popup
+`bun run conformance:multi-window` opens a dialog, a window with a `ScrollView` and a popup
 in one service and checks per-window trees, pixels, real clicks and keys, shared state,
 Escape / title-bar / focus-loss / unmount closing, and that closing leaks no nodes or
 native state.
@@ -314,102 +314,105 @@ not create one React node per line.
 />
 ```
 
-## Native chat list
+## Native elements from your app
 
-`ChatList` is a virtualized chat log drawn by the renderer, built for Twitch-style
-clients. Messages never travel as props: the ref's methods stream them into the native
-element, so an append costs only the new messages. The element keeps up to
-`maxMessages` (default 1000, oldest dropped), lays out and paints only visible rows,
-and caches each message's layout until its width, font, scale or content changes.
+When an element has to be drawn natively for speed (a virtualized log, a canvas, a chart),
+the app can add it without changing the library: the Rust side registers a native element
+and builds its own service binary on the `react_native_gpui` crate, and the JS side
+declares a host component for it. [chatterino-gpui](https://github.com/felipe-software/chatterino-gpui)
+draws its chat this way (`native/` and `src/native/chatList/`).
 
-```tsx
-import { useEffect, useRef } from "react";
-import { ChatList, type ChatListHandle, type ChatListMessage } from "react-native-gpui";
+Rust: implement `NativeElement` and pass it to `run`. Only `element_type`, `parse_props`
+and `render` are required; the other methods are hooks for commands, events, selection and
+copy, image ownership, retained state, closed windows and the debug socket.
 
-const message: ChatListMessage = {
-  id: "msg-1",
-  timestamp: "12:00",
-  marker: "#ff2d2d",
-  elements: [
-    { kind: "badge", name: "moderator", url: badgeUrl, width: 18, height: 18, tooltip: "Moderator" },
-    { kind: "user", text: "alice:", login: "alice", color: "#ff4040" },
-    { kind: "text", text: "hello world" },
-    { kind: "emote", name: "Kappa", url: kappaUrl, width: 28, height: 28 },
-  ],
-};
+```rust
+use std::sync::Arc;
+use gpui::{AnyElement, IntoElement};
+use react_native_gpui::native_element::{NativeCommand, NativeElement, NativeProps, ReactElement};
 
-function Channel({ chat }: { chat: ChatSource }) {
-  const list = useRef<ChatListHandle>(null);
-  useEffect(() => {
-    list.current?.prepend(chat.history());
-    return chat.onMessages((messages) => list.current?.append(messages));
-  }, [chat]);
-  return (
-    <ChatList
-      ref={list}
-      style={{ flex: 1, backgroundColor: "#191919" }}
-      fontSize={13}
-      showTimestamps
-      textColor="#ffffff"
-      mutedColor="#8c7f7f"
-      linkColor="#4286f4"
-      pauseOnHover
-      onPress={({ nativeEvent }) => {
-        if (nativeEvent.target === "user") openUserCard(nativeEvent.login);
-        if (nativeEvent.target === "link") openUrl(nativeEvent.url);
-        if (nativeEvent.button === "right") showMessageMenu(nativeEvent.messageId, nativeEvent.x, nativeEvent.y);
-      }}
-      onHover={({ nativeEvent }) => setTooltip(nativeEvent)}
-      onScrollState={({ nativeEvent }) => setMoreBelow(nativeEvent.atBottom ? 0 : nativeEvent.unseen)}
-    />
-  );
+struct Gauge;
+
+impl NativeElement for Gauge {
+    fn element_type(&self) -> &'static str {
+        "gauge"
+    }
+    fn parse_props(&self, props: Option<&serde_json::Value>) -> NativeProps {
+        NativeProps::new(GaugeProps::parse(props))
+    }
+    fn render(&self, element: Arc<ReactElement>, _window_id: u64) -> AnyElement {
+        GaugeElement::new(element).into_any_element()
+    }
+    fn parse_command(&self, name: &str, args: &serde_json::Value) -> Option<NativeCommand> {
+        GaugeCommand::parse(name, args).map(NativeCommand::new)
+    }
+    fn apply_command(&self, id: u64, command: NativeCommand) {
+        if let Some(command) = command.take::<GaugeCommand>() {
+            apply(id, command);
+        }
+    }
+}
+
+fn main() {
+    react_native_gpui::run(vec![Box::new(Gauge)]);
 }
 ```
 
-When a moderator deletes the message, patch it in place (`hidden: true` removes it from
-the layout instead, like Chatterino's "hide moderated messages"):
+- The element reads its props with `element.native_props::<GaugeProps>()` and sends events
+  with `emit_event(id, "gaugeChange", payload)`. `props_change_is_paint_only` tells the
+  retained-layout fast path that a props change cannot move a layout box; a command that
+  only repaints calls `arm_paint_only_frame()`.
+- `parse_props` and `parse_command` run on the tree-parser thread and must not touch
+  main-thread state; the other hooks run on the main thread.
+- Depend on the crate by path and repeat its `[patch.crates-io]` entries in your workspace
+  root, pointed into the checkout's `rust/vendor/` (patches only apply at the root):
 
-```tsx
-list.current?.update([{ id: "msg-1", disabled: true }]);
+```toml
+[dependencies]
+react-native-gpui = { path = "../react-native-gpui/rust" }
+gpui = "0.2.2"
+
+[patch.crates-io]
+gpui = { path = "../react-native-gpui/rust/vendor/gpui-0.2.2-patched" }
+gpui-component = { path = "../react-native-gpui/rust/vendor/gpui-component-0.5.1-patched" }
+gpui-component-macros = { path = "../react-native-gpui/rust/vendor/gpui-component-macros-0.5.1-patched" }
+taffy = { path = "../react-native-gpui/rust/vendor/taffy-0.9.0-patched" }
 ```
 
-- Message flags: `disabled` and `historical` fade a message, `hidden` takes it out of the
-  layout until a patch sets it back, `background` fills the row, `marker` colors its
-  scrollbar tick. A badge's `background` paints behind its image (FFZ's custom moderator
-  badge).
+- Stage `ui-runtime.js` (the package's `dist/ui-runtime.js`) beside your binary, and on
+  macOS sign it with `rust/jsc.entitlements` like `rngpui-service`. Run it with
+  `RNGPUI_SERVICE=<path>`; every launcher and the `rngpui` CLI honor it.
 
-- Handle: `append`, `prepend` (history, oldest first), `update` (patches by `id`; pass
-  `""` to clear a string or color field), `clear`, `scrollToBottom`, `scrollToTop`,
-  `scrollToMessage(id, { align: "top" | "center" | "bottom" })` (default center),
-  `pageUp`, `pageDown` (one viewport, for the app's Page Up / Page Down keys).
-- Elements are separated by one space; whitespace inside a text element separates words.
-  Set `trailingSpace: false` on an element to glue the next one to it (`@alice` + `,`).
-- Layout follows Chatterino: 8/4 px margins, elements bottom-aligned per line, emotes
-  count as 4 px shorter than they are (they overhang 2 px above and below), badges are not
-  scaled by `emoteScale`, zero-width emotes are centered over the previous emote, and a
-  `reply` renders as one truncated line at 0.8× size with a curve.
-- Images load through GPUI's image cache (http(s) URLs or file paths). Animated GIF and
-  WebP play while visible; the list schedules one repaint for the earliest frame change,
-  and an idle list without visible animation does not repaint.
-- Scrolling: wheel/trackpad, a thin scrollbar that widens on hover and shows `marker`
-  colors. At the bottom the list follows new messages; scrolled up, appends, prepends
-  and trimming keep the rows you are reading in place, and `onScrollState` reports
-  `{ atBottom, paused, unseen }`. `pauseOnHover` freezes the view while the pointer is
-  over the list.
-- Interaction: `onHover` fires with the user, link, emote or badge under the pointer, its
-  window-space bounds and the pointer position (`pointerX`, `pointerY`), or `null` when
-  it leaves, so tooltips can be React overlays. `onPress` fires for user/link/emote/badge,
-  or `message` for anything else, with the button, pointer position and modifier keys
-  (`shiftKey`, `ctrlKey`, `altKey`, `metaKey`). Left clicks fire on release unless the pointer moved more
-  than 15 px (that was a selection); right and middle clicks fire on press.
-- Selection: drag selects across messages, double-click selects a word, triple-click
-  selects the message body. Ctrl+C (Cmd+C on macOS) copies it, including while a
-  `TextInput` is focused, unless that input holds a newer selection of its own. Emotes
-  copy as their names, badges copy nothing.
+JS: declare the host component once, at module level. `props` lists the props sent to
+`parse_props` and how each is converted (`"color"` resolves any color value to a CSS
+string); `events` maps handler props to the event names the element emits, and each
+handler receives `{ nativeEvent }`. `useNativeElement` gives the instance an id before it
+mounts, so commands can be sent right away.
 
-`bun run conformance:chat-list` checks wrapping, emote placement, timestamps, events,
-selection, copy and scroll anchoring against real pixels and bounds.
-`bun run perf:chat-list` measures 6 lists × 1000 messages at 20 messages/s.
+```tsx
+import { useEffect } from "react";
+import { defineNativeComponent, useNativeElement, type ViewProps } from "react-native-gpui";
+
+type GaugeProps = ViewProps & {
+  value?: number;
+  color?: string;
+  onChange?: (event: { nativeEvent: { value: number } }) => void;
+};
+
+const GaugeHost = defineNativeComponent<GaugeProps>({
+  type: "gauge",
+  props: { value: "number", color: "color" },
+  events: { onChange: "gaugeChange" },
+});
+
+function Gauge({ resetKey, ...props }: GaugeProps & { resetKey?: number }) {
+  const gauge = useNativeElement(GaugeHost.type);
+  useEffect(() => gauge.send("reset"), [gauge, resetKey]);
+  return <GaugeHost {...props} nativeElementId={gauge.id} />;
+}
+```
+
+`sendNativeCommand(type, id, name, args)` is the same call without the hook.
 
 Use `PerformanceHUD.setEnabled(true)` or `rngpui do hud on` for the native
 frame/layout/paint overlay. `Renderer.getProvenance()` and
@@ -503,7 +506,7 @@ await ImageCache.prefetch(emoteUrls);             // download + decode before th
 | `Processes.findRunning(names): Promise<string[]>` | The given names that match a running process, compared case-insensitively against the process name and its executable's file name (Linux `/proc/*/comm` and `cmdline`, macOS `ps`). |
 | `fetch` | `Response` has `status`, `statusText`, `ok` (2xx), `url` (after redirects), `redirected`, `headers` (`get`/`has`/`forEach`/`entries`/`keys`/`values`, iterable), `text()`, `json()`, `arrayBuffer()`, `clone()`. Bodies may be strings, `URLSearchParams`, `ArrayBuffer`, or any typed array/`DataView`; network errors reject with `TypeError`. |
 | `fetch(url, { cache })` | GET requests use the disk cache below only when asked. `"default"` and `"no-store"` go to the network and store nothing. `"reload"` goes to the network and stores a 200. `"force-cache"` returns the stored copy at any age, else fetches and stores. `"only-if-cached"` returns the stored copy or a `504` response without touching the network. `"no-cache"` revalidates a stored copy with `If-None-Match`/`If-Modified-Since` and returns it on `304`. For stale-while-revalidate, start `only-if-cached` and `reload` together and apply each as it arrives. |
-| `ImageCache.prefetch(urls): Promise<boolean>` | Downloads and decodes images into the same cache `<Image>` and `ChatList` read, so their first paint already has them. Resolves `true` when every URL loaded. |
+| `ImageCache.prefetch(urls): Promise<boolean>` | Downloads and decodes images into GPUI's image cache, which `<Image>` (and any native element loading through GPUI's image loader) reads, so their first paint already has them. Resolves `true` when every URL loaded. |
 | `ImageCache.preconnect(origins)` | Opens the HTTP/2 connection to each origin now (a `HEAD /`), so the first images from it skip the TCP and TLS handshakes. |
 | `crypto.getRandomValues`, `crypto.randomUUID` | Backed by the OS random number generator; also exported as `getRandomValues()` / `randomUUID()`. |
 | `NativeClipboard.read(): Promise<string>` | The clipboard's text (`""` when it holds none), read on the main thread. `NativeClipboard.setString(text)` writes it. |
@@ -612,8 +615,6 @@ bun run conformance:input-runtime    # nonactivating focus, tab, IME, controlled
 bun run conformance:portal           # Portal overlay and TextInput-in-portal behavior
 bun run conformance:native-layout    # native layout override without React width state
 bun run conformance:text-lines       # visual fixture for Text numberOfLines
-bun run conformance:chat-list        # ChatList layout, events, selection, scroll anchoring
-bun run perf:chat-list               # ChatList CPU and frame numbers under load
 bun run conformance:local-storage    # localStorage across restarts, SIGTERM, corruption
 bun run conformance:platform-services # fetch, crypto, notifications, sound, processes
 bun run conformance:http-cache       # fetch cache modes, image disk cache across launches

@@ -28,7 +28,7 @@ pub fn prefetch(urls: Vec<String>, request_id: Option<u64>, cx: &mut App) {
         }
         let (task, _) = cx.fetch_asset::<ImgResourceLoader>(&resource_for(&url));
         tasks.push(task);
-        if crate::elements::chat_list::tracks_image(&url) {
+        if crate::native_element::holds_image(&url) {
             continue;
         }
         PREFETCHED.with_borrow_mut(|prefetched| {

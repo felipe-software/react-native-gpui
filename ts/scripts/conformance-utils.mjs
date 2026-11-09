@@ -91,7 +91,7 @@ function readLiveWindowRecord(path) {
     } catch {
         return null;
     }
-    if (isLiveService(record.pid)) return record;
+    if (isLiveService(record)) return record;
     if (!existsSync(`/proc/${record.pid}`)) {
         rmSync(path, { force: true });
         rmSync(path.replace(/\.json$/, ".capture"), { force: true });
@@ -99,9 +99,9 @@ function readLiveWindowRecord(path) {
     return null;
 }
 
-function isLiveService(pid) {
+function isLiveService(record) {
     try {
-        return readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "rngpui-service";
+        return readFileSync(`/proc/${record.pid}/comm`, "utf8").trim() === (record.process ?? "rngpui-service");
     } catch {
         return false;
     }

@@ -83,23 +83,14 @@ export type {
 export { Window, type WindowProps, type WindowHandle, type WindowCloseEvent } from "./Window";
 export type { WindowCloseReason, WindowKind, WindowPosition } from "./window-host";
 export { useAppState, useWindowFocused, type AppStateStatus, type AppStateEventType, type WindowFocusEvent } from "./app-state";
-export { ChatList } from "./ChatList";
+export { defineNativeComponent, sendNativeCommand, useNativeElement } from "./native-component";
 export type {
-    ChatListBadgeElement,
-    ChatListElement,
-    ChatListEmoteElement,
-    ChatListHandle,
-    ChatListHoverEvent,
-    ChatListMessage,
-    ChatListMessagePatch,
-    ChatListPressEvent,
-    ChatListProps,
-    ChatListRevealAlign,
-    ChatListScrollState,
-    ChatListTargetKind,
-    ChatListTextElement,
-    ChatListUserElement,
-} from "./chat-list-types";
+    NativeComponent,
+    NativeComponentConfig,
+    NativeComponentProps,
+    NativeElementHandle,
+    NativePropKind,
+} from "./native-component";
 
 // stylesheet + style types
 export { StyleSheet, normalizeStyle } from "./StyleSheet";

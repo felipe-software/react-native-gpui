@@ -55,7 +55,7 @@ pub fn last_copy() -> Option<String> {
 }
 
 pub fn begin_drag(position: Point<Pixels>) {
-    crate::elements::chat_list::clear_selection();
+    crate::native_element::clear_selection();
     DRAG.with(|d| {
         *d.borrow_mut() = Some(Drag {
             start: position,
@@ -179,7 +179,7 @@ pub fn set_segment(node: u64, order: (f32, f32), text: String) {
 /// side-by-side nodes on the same row with a space.
 pub fn selected_text() -> Option<String> {
     let native = native_selected_text();
-    native.or_else(crate::elements::chat_list::selected_text)
+    native.or_else(crate::native_element::selected_text)
 }
 
 fn native_selected_text() -> Option<String> {

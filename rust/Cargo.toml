@@ -3,12 +3,16 @@ name = "react-native-gpui"
 version = "0.1.39"
 edition = "2024"
 
+[lib]
+name = "react_native_gpui"
+path = "src/service.rs"
+
 # the renderer service: hosts JavaScriptCore on a JS thread, renders committed React trees
 # with GPUI, and posts native events back into JS. this is the single native artifact
 # the npm package ships and drives.
 [[bin]]
 name = "rngpui-service"
-path = "src/service.rs"
+path = "src/bin/rngpui-service.rs"
 
 [dependencies]
 # runtime_shaders compiles Metal shaders at runtime instead of build time,
