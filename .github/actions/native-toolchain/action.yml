@@ -26,11 +26,21 @@ runs:
           with:
               version: 0.15.2
 
+        - name: Build Zig code for the baseline CPU
+          shell: bash
+          run: |
+              wrapper_dir="$RUNNER_TEMP/zig-baseline"
+              mkdir -p "$wrapper_dir"
+              real_zig="$(command -v zig)"
+              printf '#!/bin/sh\nif [ "$1" = build ]; then shift; exec "%s" build -Dcpu=baseline "$@"; fi\nexec "%s" "$@"\n' "$real_zig" "$real_zig" > "$wrapper_dir/zig"
+              chmod +x "$wrapper_dir/zig"
+              echo "$wrapper_dir" >> "$GITHUB_PATH"
+
         - name: Cache Cargo
           uses: Swatinem/rust-cache@v2
           with:
               workspaces: rust -> target
-              key: ${{ inputs.cache-key }}
+              key: ${{ inputs.cache-key }}-zig-baseline
 
         - name: Cache the Ghostty source
           uses: actions/cache@v4
