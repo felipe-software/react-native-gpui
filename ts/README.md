@@ -588,7 +588,7 @@ The version in `package.json` is not the release version: CI sets it, and the
 
 1. **Baseline tag.** Before the first merge to `main` with these workflows, tag upstream's 0.1.39
    release commit so semantic-release continues from there (the next release is 0.1.40):
-   `git tag v0.1.39 89ac9d6 && git push origin v0.1.39`. Without a `v*` tag the version
+   `git tag v0.1.39 61782dc && git push origin v0.1.39`. Without a `v*` tag the version
    bump job stops instead of starting over at 1.0.0.
 2. **npm organization** `felipe-software`, with your npm account as an owner.
 3. **GitHub environment** `npm` in this repository (Settings → Environments), holding:

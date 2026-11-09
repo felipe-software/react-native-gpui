@@ -304,7 +304,7 @@ versions that the script bumps in place. The checked-in `ts/package.json` has no
    conventional commits since the last `v*` tag (`feat`, `fix`, `perf`, `refactor`,
    `revert` → patch) and pushes the next `v<version>` tag plus a GitHub release. It
    refuses to run while no `v*` tag exists (it would start at 1.0.0); the baseline is
-   `v0.1.39` on 89ac9d6, upstream's 0.1.39 release commit.
+   `v0.1.39` on 61782dc, upstream's 0.1.39 release commit.
 2. The tag runs `publish-npm.yml`: a native matrix (ubuntu-24.04, ubuntu-24.04-arm,
    macos-14) builds `rngpui-service` with `.github/actions/native-toolchain`, and
    `scripts/npm-packages.mjs stage-platform` strips debug info (macOS re-signs with
