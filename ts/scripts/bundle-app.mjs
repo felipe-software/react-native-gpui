@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process'
 import { reanimatedBunPlugin } from './reanimated-bun-plugin.mjs'
 import { rngpuiHotUpdateAliasPlugin } from './hot-update-alias-plugin.mjs'
 import { createReactRefreshSwcTransform } from './react-refresh-swc.mjs'
+import { singleReactPlugin } from './single-react-plugin.mjs'
 import { nativePackageExportsPlugin } from './native-package-exports-plugin.mjs'
 import { isRepoCheckout } from './service-binary.mjs'
 
@@ -40,6 +41,7 @@ const result = await Bun.build({
   },
   plugins: [
     ...(hotUpdate ? [rngpuiHotUpdateAliasPlugin()] : []),
+    singleReactPlugin({ projectRoot }),
     reanimatedBunPlugin({ rngTsRoot: root, resolveRoot: projectRoot, libraryEntry, transformSource: refreshTransform }),
     nativePackageExportsPlugin({ root: projectRoot, name: 'rngpui native package exports' }),
   ],

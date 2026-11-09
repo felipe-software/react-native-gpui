@@ -31,6 +31,7 @@
         "scripts/reanimated-bun-plugin.mjs",
         "scripts/service-binary.mjs",
         "scripts/service-binary.d.mts",
+        "scripts/single-react-plugin.mjs",
         "src/reanimated",
         "src/refresh.ts",
         "README.md"
