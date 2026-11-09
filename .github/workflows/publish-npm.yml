@@ -1,0 +1,220 @@
+name: Publish npm packages
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: Tag to publish, for example v0.1.40
+                required: true
+                type: string
+    push:
+        tags:
+            - "v*"
+
+permissions:
+    contents: read
+
+concurrency:
+    group: publish-npm-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    cancel-in-progress: false
+
+env:
+    PUBLISH_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+    version:
+        runs-on: ubuntu-24.04
+        outputs:
+            version: ${{ steps.version.outputs.version }}
+        steps:
+            - name: Read the package version from the tag
+              id: version
+              run: |
+                  TAG_VERSION="${PUBLISH_TAG#v}"
+
+                  if [ -z "$TAG_VERSION" ] || [ "v$TAG_VERSION" != "$PUBLISH_TAG" ]; then
+                    echo "::error::Invalid release tag: $PUBLISH_TAG"
+                    exit 1
+                  fi
+
+                  echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+    native:
+        name: native (${{ matrix.platform }})
+        needs: version
+        strategy:
+            fail-fast: true
+            matrix:
+                include:
+                    - platform: linux-x64
+                      runner: ubuntu-24.04
+                    - platform: linux-arm64
+                      runner: ubuntu-24.04-arm
+                    - platform: darwin-arm64
+                      runner: macos-14
+        runs-on: ${{ matrix.runner }}
+        env:
+            VERSION: ${{ needs.version.outputs.version }}
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with:
+                  ref: ${{ env.PUBLISH_TAG }}
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.2
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  package-manager-cache: false
+
+            - name: Setup the native toolchain
+              uses: ./.github/actions/native-toolchain
+              with:
+                  cache-key: release-${{ matrix.platform }}
+
+            - name: Install dependencies
+              working-directory: ts
+              run: bun install --frozen-lockfile
+
+            - name: Build rngpui-service
+              working-directory: ts
+              run: |
+                  npm run prebuild:reanimated
+                  npm run build:rust
+                  npm run build:native
+
+            - name: Check the macOS signature
+              if: runner.os == 'macOS'
+              working-directory: ts/native
+              run: |
+                  codesign --verify --verbose=2 rngpui-service
+                  codesign -d --entitlements - rngpui-service 2>&1 | grep -q com.apple.security.cs.allow-jit
+
+            - name: Check the Linux libraries resolve
+              if: runner.os == 'Linux'
+              working-directory: ts/native
+              run: |
+                  if ldd rngpui-service | grep 'not found'; then
+                    exit 1
+                  fi
+
+            - name: Pack the platform package
+              working-directory: ts
+              run: |
+                  node scripts/npm-packages.mjs stage-platform --version "$VERSION" --out npm/platform
+                  mkdir -p "$RUNNER_TEMP/packs"
+                  npm pack ./npm/platform --pack-destination "$RUNNER_TEMP/packs"
+                  ls "$RUNNER_TEMP/packs/felipe-software-react-native-gpui-${{ matrix.platform }}-$VERSION.tgz"
+
+            - name: Upload the platform package
+              uses: actions/upload-artifact@v4
+              with:
+                  name: npm-${{ matrix.platform }}
+                  path: ${{ runner.temp }}/packs/*.tgz
+                  if-no-files-found: error
+
+    main:
+        needs: version
+        runs-on: ubuntu-24.04
+        env:
+            VERSION: ${{ needs.version.outputs.version }}
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with:
+                  ref: ${{ env.PUBLISH_TAG }}
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.4.2
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  package-manager-cache: false
+
+            - name: Install dependencies
+              working-directory: ts
+              run: bun install --frozen-lockfile
+
+            - name: Typecheck
+              working-directory: ts
+              run: npm run typecheck
+
+            - name: Build the main package
+              working-directory: ts
+              run: |
+                  npm run prebuild:reanimated
+                  npm run build:ts
+
+            - name: Pack the main package
+              working-directory: ts
+              run: |
+                  node scripts/npm-packages.mjs set-version "$VERSION"
+                  mkdir -p "$RUNNER_TEMP/packs"
+                  npm pack --pack-destination "$RUNNER_TEMP/packs"
+
+            - name: Upload the main package
+              uses: actions/upload-artifact@v4
+              with:
+                  name: npm-main
+                  path: ${{ runner.temp }}/packs/*.tgz
+                  if-no-files-found: error
+
+    publish:
+        needs: [version, native, main]
+        runs-on: ubuntu-24.04
+        environment:
+            name: npm
+            url: https://www.npmjs.com/package/@felipe-software/react-native-gpui
+        permissions:
+            contents: read
+            id-token: write
+        env:
+            VERSION: ${{ needs.version.outputs.version }}
+
+        steps:
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  registry-url: https://registry.npmjs.org
+                  package-manager-cache: false
+
+            - name: Download packages
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: npm-*
+                  path: packs
+                  merge-multiple: true
+
+            - name: Publish the platform packages, then the main package
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+              run: |
+                  set -euo pipefail
+
+                  publish() {
+                    local tarball="$1"
+                    local name
+                    name="$(tar -xzOf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')"
+                    if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+                      echo "$name@$VERSION is already on npm, skipping"
+                      return
+                    fi
+                    npx --yes npm@11.5.1 publish "$tarball" --provenance --access public
+                  }
+
+                  for tarball in packs/felipe-software-react-native-gpui-*-*-"$VERSION".tgz; do
+                    publish "$tarball"
+                  done
+                  publish "packs/felipe-software-react-native-gpui-$VERSION.tgz"

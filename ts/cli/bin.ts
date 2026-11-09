@@ -18,11 +18,15 @@ import { runFlow } from "./commands/flow";
 import { runTrace } from "./commands/trace";
 import { runDiff, runShot, type ShotFlags } from "./commands/shot";
 import { runHotReload } from "./hotReload";
+import { bundleApp } from "./bundle";
+import { runApp } from "./run";
 import { join, resolve } from "node:path";
 
 const HELP = `rngpui — react-native-gpui developer CLI
 
 usage:
+  rngpui bundle <entry.tsx> <out.js> [--dev]                 bundle an app for rngpui-service (production unless --dev)
+  rngpui run <entry.tsx | --bundle app.js> [--dev] [--size WxH]   bundle the app and open its window
   rngpui shot <--bundle app.js | --launch entry.tsx | --session dir> [--size WxH] [--appearance light|dark] [--select id ...] [--out png] [--fixture] [--keep]
   rngpui reshot --session <dir> [--window <sel>] [--select id ...] [--out png]   sub-second re-capture of a kept session
   rngpui dev --launch <entry.tsx> [--root <dir> ...] [--size WxH]   launch once and Fast Refresh on edit
@@ -166,6 +170,7 @@ function parseArgs(argv: string[]) {
         else if (a === "--debounce-ms") flags.debounceMs = args[++i] ?? "";
         else if (a === "--label") flags.label = args[++i] ?? "";
         else if (a === "--once") flags.once = true;
+        else if (a === "--dev") flags.dev = true;
         else if (a === "-h" || a === "--help") flags.help = true;
         else positional.push(a);
     }
@@ -189,6 +194,26 @@ function shotFlags(flags: Record<string, string | boolean>, select: string[]): S
     };
 }
 
+function bundleCommand(args: string[], flags: Record<string, string | boolean>): number {
+    const [entry, positionalOut] = args;
+    const out = flags.out ? String(flags.out) : positionalOut;
+    if (!entry || !out) {
+        console.error("  bundle needs an entry and an output path: rngpui bundle app.tsx dist/app.js");
+        return 1;
+    }
+    bundleApp(entry, out, { development: flags.dev === true, inheritOutput: true });
+    return 0;
+}
+
+function runCommand(entry: string | undefined, flags: Record<string, string | boolean>): Promise<number> {
+    return runApp({
+        entry,
+        bundle: flags.bundle ? String(flags.bundle) : undefined,
+        development: flags.dev === true,
+        size: flags.size ? String(flags.size) : undefined,
+    });
+}
+
 async function main(): Promise<number> {
     const { flags, positional, select, actions, roots, ignores, extensions } = parseArgs(process.argv);
     if (flags.help || positional.length === 0) {
@@ -198,6 +223,15 @@ async function main(): Promise<number> {
 
     const [group, sub, ...rest] = positional;
     const json = flags.json === true;
+
+    if (group === "bundle" || group === "run") {
+        try {
+            return group === "bundle" ? bundleCommand(positional.slice(1), flags) : await runCommand(positional[1], flags);
+        } catch (err) {
+            console.error(`  ${err instanceof Error ? err.message : String(err)}`);
+            return 1;
+        }
+    }
 
     // The fast iteration commands own their whole host lifecycle (launch/attach +
     // capture + close), so they short-circuit the generic get/do/flow plumbing.

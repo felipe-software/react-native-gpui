@@ -1,5 +1,5 @@
 {
-    "name": "react-native-gpui",
+    "name": "@felipe-software/react-native-gpui",
     "version": "0.1.39",
     "description": "Write React Native components, render them natively with GPUI (Zed's GPU UI framework).",
     "type": "module",
@@ -10,16 +10,30 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
-        }
+        },
+        "./scripts/*": "./scripts/*",
+        "./package.json": "./package.json"
     },
     "bin": {
         "rngpui": "./cli/bin.ts"
     },
     "files": [
+        ".reanimated-prebuilt",
         "cli",
         "dist",
-        "native",
-        "scripts",
+        "scripts/bundle-app.mjs",
+        "scripts/conformance-utils.mjs",
+        "scripts/hot-update-alias-plugin.mjs",
+        "scripts/native-libs.mjs",
+        "scripts/native-package-exports-plugin.mjs",
+        "scripts/pixel.mjs",
+        "scripts/png.mjs",
+        "scripts/react-refresh-swc.mjs",
+        "scripts/reanimated-bun-plugin.mjs",
+        "scripts/service-binary.mjs",
+        "scripts/service-binary.d.mts",
+        "src/reanimated",
+        "src/refresh.ts",
         "README.md",
         "THIRD-PARTY-LICENSES"
     ],
@@ -29,10 +43,11 @@
         "build:native": "node scripts/build-native.mjs",
         "build:clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
         "build:types": "tsc --emitDeclarationOnly",
-        "build:bundle": "bun build src/index.ts --outfile dist/index.js --target node --format esm --production --define:__DEV__=false --external react --external react/jsx-runtime --external react/jsx-dev-runtime && bun scripts/build-ui-runtime.mjs --force",
+        "build:bundle": "bun build src/index.ts --outfile dist/index.js --target node --format esm --production --define:__DEV__=false --external react --external react/jsx-runtime --external react/jsx-dev-runtime && bun build src/index.ts --outfile dist/index.development.js --target node --format esm --define:__DEV__=true --define:process.env.NODE_ENV='\"development\"' --external react --external react/jsx-runtime --external react/jsx-dev-runtime && bun scripts/build-ui-runtime.mjs --force",
         "build:ts": "npm run build:clean && npm run build:types && npm run build:bundle",
         "typecheck": "tsc --noEmit",
         "test": "bun run scripts/test-suite.mjs",
+        "test:unit": "bun run scripts/animated-driver-unit.mjs && bun run scripts/keyboard-navigation-unit.mjs && bun run scripts/surfaces-unit.mjs && bun run scripts/native-package-exports-unit.mjs && bun run scripts/wire-delta-unit.mjs && bun run scripts/worklet-runtime-unit.mjs && bun run scripts/appearance-serialize-unit.tsx && bun run scripts/semantic-serialize-unit.tsx && bun run scripts/pixel.test.mjs",
         "test:animated-driver": "bun run scripts/animated-driver-unit.mjs",
         "test:keyboard-navigation": "bun run scripts/keyboard-navigation-unit.mjs",
         "test:surfaces": "bun run scripts/surfaces-unit.mjs",
@@ -96,8 +111,9 @@
         "conformance:platform-services": "node scripts/platform-services-conformance.mjs",
         "conformance:http-cache": "node scripts/http-cache-conformance.mjs",
         "conformance:animated-image": "node scripts/animated-image-conformance.mjs",
-        "prepublishOnly": "npm run build",
-        "release": "bun scripts/release.ts"
+        "npm:set-version": "node scripts/npm-packages.mjs set-version",
+        "npm:stage-platform": "node scripts/npm-packages.mjs stage-platform",
+        "npm:pack": "node scripts/npm-packages.mjs pack"
     },
     "os": [
         "darwin",
@@ -146,8 +162,13 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/natew/react-native-gpui.git"
+        "url": "git+https://github.com/felipe-software/react-native-gpui.git"
     },
-    "homepage": "https://github.com/natew/react-native-gpui",
-    "bugs": "https://github.com/natew/react-native-gpui/issues"
+    "homepage": "https://github.com/felipe-software/react-native-gpui#readme",
+    "bugs": {
+        "url": "https://github.com/felipe-software/react-native-gpui/issues"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
 }

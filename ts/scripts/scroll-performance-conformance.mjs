@@ -46,10 +46,8 @@ function assertReferenceMatch(sample, label, tolerance = 0.75) {
     }
 }
 
-const previousService = process.env.RNGPUI_SERVICE;
 const previousDrawProbe = process.env.RNGPUI_DRAW_PROBE;
 const previousLatencyProbe = process.env.RNGPUI_SCROLL_LATENCY_PROBE;
-process.env.RNGPUI_SERVICE = new URL("../../rust/target/release/rngpui-service", import.meta.url).pathname;
 process.env.RNGPUI_DRAW_PROBE = "1";
 process.env.RNGPUI_SCROLL_LATENCY_PROBE = "1";
 
@@ -333,8 +331,6 @@ try {
         host?.close();
     } finally {
         await perfContention?.stop();
-        if (previousService === undefined) delete process.env.RNGPUI_SERVICE;
-        else process.env.RNGPUI_SERVICE = previousService;
         if (previousDrawProbe === undefined) delete process.env.RNGPUI_DRAW_PROBE;
         else process.env.RNGPUI_DRAW_PROBE = previousDrawProbe;
         if (previousLatencyProbe === undefined) delete process.env.RNGPUI_SCROLL_LATENCY_PROBE;

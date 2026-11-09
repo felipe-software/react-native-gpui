@@ -5,11 +5,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { resolveServiceBinary } from "./service-binary.mjs";
 
 const tsRoot = resolve(import.meta.dirname, "..");
 const workdir = mkdtempSync(join(tmpdir(), "rngpui-startup-"));
 const outJs = join(workdir, "startup.js");
-const binary = resolve(tsRoot, "..", "rust", "target", "release", "rngpui-service");
+const binary = resolveServiceBinary().path;
 
 function run(command, args) {
     const result = spawnSync(command, args, {

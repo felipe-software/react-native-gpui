@@ -16,9 +16,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveServiceBinary } from './service-binary.mjs'
 
 const tsRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const repoRoot = resolve(tsRoot, '..')
 const outDir = process.argv[2] || '/tmp/rngpui-reanimated-conformance'
 rmSync(outDir, { recursive: true, force: true })
 mkdirSync(outDir, { recursive: true })
@@ -46,8 +46,7 @@ if (bundle.status !== 0) {
   fail('bundle failed')
 }
 
-const serviceBin = resolve(process.env.RNGPUI_SERVICE || resolve(repoRoot, 'rust', 'target', 'release', 'rngpui-service'))
-if (!existsSync(serviceBin)) fail(`rngpui-service not found: ${serviceBin}`)
+const serviceBin = resolveServiceBinary().path
 
 let output = ''
 const child = spawn(serviceBin, [], {

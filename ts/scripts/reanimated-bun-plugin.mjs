@@ -30,9 +30,17 @@
 //     rngTsRoot      — absolute path to react-native-gpui/ts (seam/worklets/prebuilt live here)
 //     prebuiltDir    — override the prebuilt chunk dir (default: <rngTsRoot>/.reanimated-prebuilt)
 
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
+
+const LIBRARY_SPECIFIER = /^(?:@felipe-software\/)?react-native-gpui$/
+const BABEL_PACKAGES = '@babel/core @babel/plugin-syntax-jsx @babel/preset-typescript react-native-worklets@0.8.1'
+
+function defaultLibraryEntry(rngTsRoot) {
+  const source = resolve(rngTsRoot, 'src/index.ts')
+  return existsSync(source) ? source : resolve(rngTsRoot, 'dist/index.js')
+}
 
 // worklet keywords — gate the babel transform so we only pay for files that use them.
 const WORKLET_KEYWORDS =
@@ -51,9 +59,11 @@ export function reanimatedBunPlugin(opts = {}) {
   // the prebuilt chunks emit external `import { View } from "react-native"`; resolve
   // `react-native` → the gpui RN-compatible index. When the host bundler already aliases
   // it (the gui app does), pass aliasReactNative:false.
-  const reactNativeIndex = opts.reactNativeIndex || resolve(rngTsRoot, 'src/index.ts')
+  const libraryEntry = opts.libraryEntry || defaultLibraryEntry(rngTsRoot)
+  const reactNativeIndex = opts.reactNativeIndex || libraryEntry
   const aliasReactNative = opts.aliasReactNative !== false
   const transformSource = opts.transformSource
+  const libraryBuildDir = resolve(rngTsRoot, 'dist') + sep
 
   // babel worklets transform — applied to APP + Tamagui-driver source (NOT the prebuilt
   // reanimated chunk, which already ran it, and NOT reanimated node_modules). This is
@@ -63,17 +73,26 @@ export function reanimatedBunPlugin(opts = {}) {
   // re-runs the mapper, and a Tamagui spring never advances (snaps to its target). The
   // lifted function carries `this.__closure` in `__initData.code` so the UI runtime can
   // deserialize the mapper with the SharedValues it captured.
-  const pluginRequire = createRequire(resolve(resolveRoot, 'package.json'))
+  const pluginRequires = [...new Set([resolveRoot, rngTsRoot])].map((dir) => createRequire(resolve(dir, 'package.json')))
   let babel = null
   let workletsPluginPath = null
   let jsxSyntax = null
   let presetTs = null
-  const loadBabel = () => {
+  const loadBabel = (filename) => {
     if (babel) return
-    babel = pluginRequire('@babel/core')
-    workletsPluginPath = pluginRequire.resolve('react-native-worklets/plugin')
-    jsxSyntax = pluginRequire.resolve('@babel/plugin-syntax-jsx')
-    presetTs = pluginRequire.resolve('@babel/preset-typescript')
+    for (const pluginRequire of pluginRequires) {
+      try {
+        workletsPluginPath = pluginRequire.resolve('react-native-worklets/plugin')
+        jsxSyntax = pluginRequire.resolve('@babel/plugin-syntax-jsx')
+        presetTs = pluginRequire.resolve('@babel/preset-typescript')
+        babel = pluginRequire('@babel/core')
+        return
+      } catch {}
+    }
+    throw new Error(
+      `[reanimated] ${filename} uses worklets, which need the worklets Babel transform.\n` +
+        `  install: bun add -d ${BABEL_PACKAGES}`,
+    )
   }
 
   return {
@@ -81,6 +100,7 @@ export function reanimatedBunPlugin(opts = {}) {
     setup(build) {
       if (aliasReactNative) {
         build.onResolve({ filter: /^react-native$/ }, () => ({ path: reactNativeIndex }))
+        build.onResolve({ filter: LIBRARY_SPECIFIER }, () => ({ path: libraryEntry }))
       }
       // react-native-worklets (bare + any subpath) → single-runtime stub. The stub
       // force-imports the seam, which installs reanimated's globals
@@ -128,8 +148,9 @@ export function reanimatedBunPlugin(opts = {}) {
         let transformed = false
         const isTsx = args.path.endsWith('.tsx')
         const isTs = /\.(tsx?|mts|cts)$/.test(args.path)
-        if (WORKLET_KEYWORDS.test(source)) {
-          loadBabel()
+        const isLibraryBuild = args.path.startsWith(libraryBuildDir)
+        if (!isLibraryBuild && WORKLET_KEYWORDS.test(source)) {
+          loadBabel(args.path)
           const result = await babel.transformAsync(source, {
             filename: args.path,
             babelrc: false,

@@ -6,7 +6,7 @@
 // Bun is used as a compiler only. The app runtime is always the Rust service with
 // embedded JavaScriptCore, and debug commands go over RNGPUI_CONTROL_SOCKET.
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
 import {
     copyFileSync,
@@ -22,13 +22,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { captureWindow, listWindows, sleep, waitForServicePid, waitForWindow } from "../scripts/conformance-utils.mjs";
-import { isServiceLibrary } from "../scripts/native-libs.mjs";
+import { packageRoot, resolveServiceBinary, uiRuntimeEnv } from "../scripts/service-binary.mjs";
+import { bundleApp } from "./bundle";
 
-const here = dirname(fileURLToPath(import.meta.url));
-export const tsRoot = resolve(here, "..");
+export const tsRoot = packageRoot;
 
 export interface GpuiWindow {
     id: number;
@@ -196,53 +195,8 @@ type LaunchOptions = {
     fixture?: boolean;
 };
 
-function serviceBinary() {
-    const packaged = resolve(tsRoot, "native", "rngpui-service");
-    const dev = resolve(tsRoot, "..", "rust", "target", "release", "rngpui-service");
-    const binary = resolve(process.env.RNGPUI_SERVICE || (existsSync(packaged) ? packaged : dev));
-    if (!existsSync(binary)) throw new Error(`rngpui-service not found: ${binary}`);
-    stageServiceDylibs(binary);
-    return binary;
-}
-
-function stageServiceDylibs(binary: string) {
-    const releaseDir = dirname(binary);
-    const ghostty = findDylibs(resolve(tsRoot, "..", "rust", "target", "release", "build"), "libghostty-vt");
-    for (const dylib of ghostty) {
-        const dest = join(releaseDir, dylib.split("/").pop()!);
-        if (!existsSync(dest)) copyFileSync(dylib, dest);
-    }
-}
-
-function findDylibs(dir: string, prefix: string): string[] {
-    if (!existsSync(dir)) return [];
-    const out: string[] = [];
-    const stack = [dir];
-    while (stack.length) {
-        const current = stack.pop()!;
-        for (const entry of readdirSync(current, { withFileTypes: true })) {
-            const path = join(current, entry.name);
-            if (entry.isDirectory()) stack.push(path);
-            else if (isServiceLibrary(entry.name, prefix)) out.push(path);
-        }
-    }
-    return out;
-}
-
 function bundleEntry(entry: string, workdir: string, development: boolean) {
-    const entryPath = resolve(entry);
-    if (!existsSync(entryPath)) throw new Error(`entry not found: ${entryPath}`);
-    const outJs = join(workdir, "app.js");
-    const result = spawnSync("bun", ["scripts/bundle-app.mjs", entryPath, outJs], {
-        cwd: tsRoot,
-        encoding: "utf8",
-        env: { ...process.env, NODE_ENV: development ? "development" : "production" },
-    });
-    if (result.status !== 0) {
-        throw new Error(`bundle-app failed\n${result.stdout}\n${result.stderr}`);
-    }
-    if (!existsSync(outJs)) throw new Error(`bundle-app did not write ${outJs}`);
-    return outJs;
+    return bundleApp(entry, join(workdir, "app.js"), { development });
 }
 
 function writeSession(dir: string, meta: SessionMeta) {
@@ -277,10 +231,12 @@ export async function launchHost(entry: string, opts: LaunchOptions = {}): Promi
     const bundlePath = opts.bundle ? resolve(opts.bundle) : bundleEntry(entry, workdir, opts.development === true);
     if (!existsSync(bundlePath)) throw new Error(`bundle not found: ${bundlePath}`);
 
-    const child = spawn(serviceBinary(), [], {
+    const service = resolveServiceBinary().path;
+    const child = spawn(service, [], {
         cwd: tsRoot,
         env: {
             ...process.env,
+            ...uiRuntimeEnv(service),
             RNGPUI_BUNDLE: bundlePath,
             RNGPUI_NO_ACTIVATE: "1",
             RNGPUI_TEST_MODE: "1",

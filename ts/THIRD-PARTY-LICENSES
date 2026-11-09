@@ -2,7 +2,7 @@ Third-party licenses for binaries redistributed in this package
 
 
 ================================================================
-libghostty-vt*.dylib — Ghostty (https://github.com/ghostty-org/ghostty)
+libghostty-vt (libghostty-vt.so.0, libghostty-vt*.dylib) — Ghostty (https://github.com/ghostty-org/ghostty)
 ================================================================
 
 MIT License
