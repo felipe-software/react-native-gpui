@@ -80,10 +80,6 @@ jobs:
                   set -euo pipefail
 
                   tag="$(git tag --merged HEAD --list 'v[0-9]*' --sort=-version:refname | sed -n '1p')"
-                  if [ -z "${tag}" ]; then
-                    echo "::error::No v* release tag is reachable from HEAD. Push the v0.1.39 baseline tag first (ts/README.md, Releasing) or semantic-release starts over at 1.0.0."
-                    exit 1
-                  fi
                   echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
             - name: Run semantic-release

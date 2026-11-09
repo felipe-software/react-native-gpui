@@ -586,19 +586,15 @@ The version in `package.json` is not the release version: CI sets it, and the
 
 **One-time setup** (maintainers):
 
-1. **Baseline tag.** Before the first merge to `main` with these workflows, tag upstream's 0.1.39
-   release commit so semantic-release continues from there (the next release is 0.1.40):
-   `git tag v0.1.39 61782dc && git push origin v0.1.39`. Without a `v*` tag the version
-   bump job stops instead of starting over at 1.0.0.
-2. **npm organization** `felipe-software`, with your npm account as an owner.
-3. **GitHub environment** `npm` in this repository (Settings → Environments), holding:
+1. **npm scope** `@felipe-software`, owned by the `felipe-software` npm account.
+2. **GitHub environment** `npm` in this repository (Settings → Environments), holding:
    - `SEMANTIC_RELEASE_GH_TOKEN`: a fine-grained personal access token for this repository with
      *Contents: read and write*. It pushes the release tag and creates the GitHub release; a
      tag pushed with the default `GITHUB_TOKEN` would not start `publish-npm.yml`.
    - `NPM_TOKEN`, for the first release only: an npm granular access token with read and write
      access to the `@felipe-software` scope. npm can only attach a trusted publisher to a
      package that already exists, so the first publish of each package uses this token.
-4. **Trusted publishers.** After the first release, open each of the four packages on
+3. **Trusted publishers.** After the first release, open each of the four packages on
    npmjs.com (`@felipe-software/react-native-gpui` and its `-linux-x64`, `-linux-arm64` and
    `-darwin-arm64` packages) → Settings → Trusted publishing → GitHub Actions, with owner
    `felipe-software`, repository `react-native-gpui`, workflow `publish-npm.yml` and
