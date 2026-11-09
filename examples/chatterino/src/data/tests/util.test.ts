@@ -5,6 +5,7 @@ import { formatDuration, formatLongDate, formatTimestamp } from "../util/time";
 import { randomUserColor } from "../twitch/usercolor";
 import { resolveTint } from "../messages/render";
 import { parseInternalLink } from "../links/internal";
+import { requestCachedJson, type FetchInit, type FetchLike } from "../util/http";
 
 describe("parseLink", () => {
     test("accepts links with and without protocol", () => {
@@ -109,5 +110,58 @@ describe("internal links", () => {
         expect(parseInternalLink("chatterino://thread/abc-1")).toEqual({ type: "thread", rootId: "abc-1" });
         expect(parseInternalLink("chatterino://message/a%2Fb")).toEqual({ type: "message", id: "a/b" });
         expect(parseInternalLink("https://twitch.tv")).toBeUndefined();
+    });
+});
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
+function swrFetch(cached: string | undefined, network: Promise<string>): FetchLike & { modes: string[] } {
+    const modes: string[] = [];
+    const fn = (async (_url: string, init?: FetchInit) => {
+        modes.push(init?.cache ?? "default");
+        if (init?.cache === "only-if-cached") {
+            const status = cached === undefined ? 504 : 200;
+            return { ok: status === 200, status, text: async () => cached ?? "", json: async () => JSON.parse(cached ?? "null") };
+        }
+        const body = await network;
+        return { ok: true, status: 200, text: async () => body, json: async () => JSON.parse(body) };
+    }) as FetchLike & { modes: string[] };
+    fn.modes = modes;
+    return fn;
+}
+
+describe("requestCachedJson", () => {
+    test("applies the cached copy first and the network copy only when it differs", async () => {
+        const network = deferred<string>();
+        const applied: Array<[unknown, string]> = [];
+        const fetchFn = swrFetch('{"v":1}', network.promise);
+        const request = requestCachedJson(fetchFn, "https://api.example/set", (json, source) => applied.push([json, source]));
+        expect(await request.cached).toBe(true);
+        expect(applied).toEqual([[{ v: 1 }, "cache"]]);
+        network.resolve('{"v":2}');
+        await request.fresh;
+        expect(applied).toEqual([
+            [{ v: 1 }, "cache"],
+            [{ v: 2 }, "network"],
+        ]);
+        expect(fetchFn.modes).toEqual(["only-if-cached", "reload"]);
+    });
+
+    test("skips an identical network copy and survives a cache miss", async () => {
+        const same: Array<string> = [];
+        const unchanged = requestCachedJson(swrFetch('{"v":1}', Promise.resolve('{"v":1}')), "u", (_json, source) => same.push(source));
+        await Promise.all([unchanged.cached, unchanged.fresh]);
+        expect(same).toEqual(["cache"]);
+        const missed: Array<string> = [];
+        const miss = requestCachedJson(swrFetch(undefined, Promise.resolve('{"v":3}')), "u", (_json, source) => missed.push(source));
+        expect(await miss.cached).toBe(false);
+        await miss.fresh;
+        expect(missed).toEqual(["network"]);
     });
 });

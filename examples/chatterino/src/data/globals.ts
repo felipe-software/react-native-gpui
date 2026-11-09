@@ -1,15 +1,16 @@
 import type { Account, EmoteInfo, EmojiStyle } from "./api";
-import { loadBttvBadges, loadChatterinoBadges, type UserBadgeMap } from "./badges/thirdparty";
-import { loadGlobalBadges, parseIvrBadges, type BadgeMap } from "./badges/twitch";
+import { BTTV_BADGES_URL, CHATTERINO_BADGES_URL, parseBttvBadges, parseChatterinoBadges, type UserBadgeMap } from "./badges/thirdparty";
+import { IVR_GLOBAL_BADGES_URL, parseIvrBadges, type BadgeMap } from "./badges/twitch";
 import { visibleEmotes, type EmoteToggles, type GlobalEmoteSets } from "./channel/channel-emotes";
-import { loadBttvGlobal } from "./emotes/bttv";
+import { BTTV_GLOBAL_URL, parseBttvGlobal } from "./emotes/bttv";
 import { emojiShortCodes, emojiUrl } from "./emotes/emoji";
-import { loadFfzGlobal } from "./emotes/ffz";
-import { loadSeventvGlobal } from "./emotes/seventv";
+import { FFZ_GLOBAL_URL, parseFfzGlobal } from "./emotes/ffz";
+import { parseSeventvGlobal, SEVENTV_GLOBAL_URL, SEVENTV_TIMEOUT_MS } from "./emotes/seventv";
 import { twitchEmote } from "./emotes/twitch";
 import { toEmoteInfo, type Emote } from "./emotes/types";
 import { Helix } from "./twitch/helix";
-import type { FetchLike } from "./util/http";
+import { requestCachedJson, type FetchLike, type RequestInit } from "./util/http";
+import { markTiming } from "./util/timing";
 
 type HelixEmote = { id: string; name: string; emote_type?: string; format?: string[]; owner_id?: string; emote_set_id?: string };
 
@@ -30,42 +31,88 @@ function helixEmote(entry: HelixEmote): Emote {
     return emote;
 }
 
-
+type GlobalLoad = { label: string; url: string; init?: RequestInit; quiet?: boolean; apply: (json: unknown) => void };
 
 export class GlobalResources {
     emotes: GlobalEmoteSets = { ffz: new Map(), bttv: new Map(), seventv: new Map() };
     badges: BadgeMap = new Map();
-    userBadges: UserBadgeMap[] = [];
+    userBadges: UserBadgeMap[] = [new Map(), new Map()];
     twitchEmotes: Emote[] = [];
+    version = 0;
     private emojiInfos: EmoteInfo[] | undefined;
     private readyPromise: Promise<void> = Promise.resolve();
+    private cachedPromise: Promise<void> = Promise.resolve();
 
-    constructor(private readonly fetchFn: FetchLike) {}
+    constructor(
+        private readonly fetchFn: FetchLike,
+        private readonly onChanged?: () => void,
+    ) {}
 
     load(): Promise<void> {
-        const fetchFn = this.fetchFn;
-        const ignore = (label: string) => (error: unknown) => console.warn(`failed to load ${label}`, error);
-        const tasks = [
-            loadBttvGlobal(fetchFn).then((map) => {
-                this.emotes = { ...this.emotes, bttv: map };
-            }, ignore("BetterTTV global emotes")),
-            loadFfzGlobal(fetchFn).then((map) => {
-                this.emotes = { ...this.emotes, ffz: map };
-            }, ignore("FrankerFaceZ global emotes")),
-            loadSeventvGlobal(fetchFn).then((map) => {
-                this.emotes = { ...this.emotes, seventv: map };
-            }, ignore("7TV global emotes")),
-            loadGlobalBadges(fetchFn).then((map) => {
-                this.badges = map;
-            }, ignore("Twitch global badges")),
-            Promise.all([
-                loadChatterinoBadges(fetchFn).catch(() => new Map()),
-                loadBttvBadges(fetchFn).catch(() => new Map()),
-            ]).then((maps) => {
-                this.userBadges = maps;
-            }),
+        const loads: GlobalLoad[] = [
+            {
+                label: "BetterTTV global emotes",
+                url: BTTV_GLOBAL_URL,
+                apply: (json) => {
+                    this.emotes = { ...this.emotes, bttv: parseBttvGlobal(json) };
+                },
+            },
+            {
+                label: "FrankerFaceZ global emotes",
+                url: FFZ_GLOBAL_URL,
+                apply: (json) => {
+                    this.emotes = { ...this.emotes, ffz: parseFfzGlobal(json) };
+                },
+            },
+            {
+                label: "7TV global emotes",
+                url: SEVENTV_GLOBAL_URL,
+                init: { timeoutMs: SEVENTV_TIMEOUT_MS },
+                apply: (json) => {
+                    this.emotes = { ...this.emotes, seventv: parseSeventvGlobal(json) };
+                },
+            },
+            {
+                label: "Twitch global badges",
+                url: IVR_GLOBAL_BADGES_URL,
+                apply: (json) => {
+                    this.badges = parseIvrBadges(json);
+                },
+            },
+            {
+                label: "Chatterino badges",
+                url: CHATTERINO_BADGES_URL,
+                quiet: true,
+                apply: (json) => {
+                    this.userBadges = [parseChatterinoBadges(json), this.userBadges[1]];
+                },
+            },
+            {
+                label: "BetterTTV badges",
+                url: BTTV_BADGES_URL,
+                quiet: true,
+                apply: (json) => {
+                    this.userBadges = [this.userBadges[0], parseBttvBadges(json)];
+                },
+            },
         ];
-        this.readyPromise = Promise.all(tasks).then(() => undefined);
+        const requests = loads.map((load) => {
+            const request = requestCachedJson(
+                this.fetchFn,
+                load.url,
+                (json) => {
+                    load.apply(json);
+                    this.changed();
+                },
+                load.init,
+            );
+            const fresh = request.fresh.catch((error: unknown) => {
+                if (!load.quiet) console.warn(`failed to load ${load.label}`, error);
+            });
+            return { cached: request.cached, fresh };
+        });
+        this.cachedPromise = Promise.all(requests.map((request) => request.cached)).then(() => markTiming("globals:cached"));
+        this.readyPromise = Promise.all(requests.map((request) => request.fresh)).then(() => markTiming("globals:ready"));
         return this.readyPromise;
     }
 
@@ -96,6 +143,10 @@ export class GlobalResources {
             console.warn("failed to load your Twitch emotes", error);
             return false;
         }
+    }
+
+    cached(): Promise<void> {
+        return this.cachedPromise;
     }
 
     async loadTwitchEmotes(account: Account | undefined, emoteSets: string[]): Promise<void> {
@@ -138,5 +189,10 @@ export class GlobalResources {
                 ? this.emojiInfos
                 : this.emojiInfos.map((info) => ({ ...info, url: emojiUrl(info.url, emojiStyle), tooltipImage: info.tooltipImage && emojiUrl(info.tooltipImage, emojiStyle) }));
         return [...own, ...emoji];
+    }
+
+    private changed(): void {
+        this.version += 1;
+        this.onChanged?.();
     }
 }

@@ -100,7 +100,9 @@ TS surface: `ts/src/platform-services.ts` (`LocalStorage`, `Notifications`, `Sou
   `comm` is cut to 15 bytes, so a longer name also matches a 15-byte comm it starts with.
 - **fetch** returns every response header (repeated ones joined with ", "), `statusText`,
   the post-redirect `url`, and the body as text, or as base64 when it is not UTF-8. `ok` is
-  2xx only and network failures reject with `TypeError`, as in browsers.
+  2xx only and network failures reject with `TypeError`, as in browsers. It runs on ureq
+  (gzip) through one shared agent, and honors `cache` modes against the HTTP disk cache (see
+  "HTTP: image client, disk cache, fetch cache modes" below).
 - **crypto** reads 32 bits per `__rngpui_random32` call from a getrandom-filled pool.
 - **Animated `<Image>`.** GPUI keeps GIF/WebP frame state only for an `img` with an element
   id, so `rust/src/elements/image.rs` gives the inner img one keyed by a hash of the source.
@@ -110,9 +112,71 @@ TS surface: `ts/src/platform-services.ts` (`LocalStorage`, `Notifications`, `Sou
   150ms-per-frame GIF paints ~7fps and a still image paints nothing while idle.
 
 Gates: `bun run conformance:local-storage`, `conformance:platform-services` (local HTTP server,
-fake sound/notification sinks, a copied `sleep` as the probe process) and
-`conformance:animated-image` (`shot --keep`, `reshot`, `diff`, `get frames`), all in
-`bun run test`.
+fake sound/notification sinks, a copied `sleep` as the probe process),
+`conformance:animated-image` (`shot --keep`, `reshot`, `diff`, `get frames`) and
+`conformance:http-cache`, all in `bun run test`.
+
+## HTTP: image client, disk cache, fetch cache modes (2026-11-08)
+
+- **Image client.** `rust/src/http.rs` (`AppHttpClient`) is the GPUI `HttpClient` behind
+  `ImgResourceLoader`, so it serves both `<Image>` and `ChatList`. It is zed-reqwest (the build
+  `gpui_http_client` already compiles, so no new crates) on a current-thread tokio runtime on the
+  `rngpui-net` thread, HTTP/2 through ALPN with one pooled connection per host. The old pool was
+  6 blocking ureq workers on HTTP/1.1, which paid a round trip per image per connection.
+- **The HTTP/2 windows must be set.** With hyper's defaults, two 190 KB animated emotes from
+  `cdn.7tv.app` (280 ms RTT from roberto) took 7-12 s against 2 s for curl; 6 MB per stream and
+  15 MB per connection (Chrome's values) brought them to 2 s.
+- **Host gate.** hyper-util starts one connection per concurrent request until the first one
+  is pooled, so a burst of 90 cold images would open 90 TLS connections. Each origin starts at 6
+  requests in flight; the first response widens it to 128 when it was HTTP/2.
+- **Preconnect.** `ImageCache.preconnect(origins)` (`$cmd: "httpPreconnect"`) sends `HEAD /`
+  outside the gate on the image client (`client(FOLLOW_ALL_LIMIT)`: each redirect limit is its own
+  `reqwest::Client` and pool, so preconnecting on another one warms nothing).
+- **Disk cache.** `rust/src/http_cache.rs`, one file per URL at
+  `<cache dir>/<app id>/http/<2 hex>/<sha256(url)>`; cache dir is `$XDG_CACHE_HOME` or `~/.cache`
+  on Linux, `~/Library/Caches` on macOS, the app id as in `storage.rs`. `RNGPUI_CACHE_DIR`
+  replaces `<cache dir>/<app id>`, `RNGPUI_TEST_MODE` without it disables the cache (every harness
+  launch stays isolated), `RNGPUI_HTTP_CACHE=0` turns it off, `RNGPUI_HTTP_CACHE_MAX_MB` caps it
+  (256). A file is `RNGHTTP1`, a u32 LE length, JSON metadata (url, final url, status, headers,
+  stored/fresh-until ms, body length) and the body; a read that finds the wrong magic, url or
+  length deletes the file and misses. Writes go to `http/tmp/<key>.<pid>.<seq>` and are renamed
+  into place (no fsync: a torn file fails the length check), so two processes can share the
+  directory. Reads bump the mtime at most hourly; 20 s after first use and after every 10% of the
+  cap written, a scan under a non-blocking `flock` on `http/.scan.lock` deletes the oldest mtimes
+  down to 80% and temp files older than an hour.
+- **What is stored**: 200 responses to GETs without `Authorization`, `Cookie` or `Range`.
+  Freshness: `no-store` is not stored, `no-cache` is stored already stale, then `max-age` minus
+  `Age`, `Expires` minus `Date`, 10% of the `Last-Modified` age (at most 7 days), else 1 hour.
+  Images use any stored copy at once and revalidate a stale one in the background (`ETag` /
+  `Last-Modified`), so the next load gets the new one.
+- **fetch `cache` modes** (`jsc.rs` `do_fetch`): `default` and `no-store` are unchanged (network,
+  nothing stored); `reload` stores; `force-cache` returns any stored copy, else fetches and
+  stores; `only-if-cached` returns the stored copy or a 504 without the network; `no-cache`
+  sends a conditional request and returns the stored body on 304. Stale-while-revalidate is two
+  requests started together, `only-if-cached` and `reload` (examples/chatterino
+  `requestCachedJson`).
+- **`ImageCache.prefetch(urls)`** (`rust/src/image_prefetch.rs`) calls
+  `cx.fetch_asset::<ImgResourceLoader>` on the main thread, so the first paint finds the image
+  downloaded and decoded; the promise resolves through a `{"type":"imagePrefetch"}` bridge event.
+  The ChatList image map adopts a prefetched URL when it paints it; unadopted ones are dropped
+  from GPUI's asset cache after 5 minutes.
+- **Decoding is not the bottleneck.** GPUI decodes every GIF/WebP frame before the first can
+  paint; measured with image 0.25.10, 1x emotes (up to 158 frames) take at most 5 ms and the first
+  frame under 0.2 ms, 3x/4x tooltip images about 28 ms. GPUI's loader was left as it is.
+- **Debugging**: `RNGPUI_HTTP_TRACE=1` prints `[rngpui-http] {url, source: network|cache|
+  revalidate, status, startMs, endMs, bytes}` per image request. `chatListState` takes
+  `images: true` (per-list `visibleImages` with state, `visibleIds`, and `visibleHistorical`) and
+  `timings: true` (`imageTimings`: requested, settled and first-painted wall-clock ms per URL).
+- **Timing harness**: `bun examples/chatterino/scripts/emote-timing.mjs` times cold and warm
+  launches of examples/chatterino and of the Flatpak Chatterino 2.5.5 (Xvfb `:98`, logs via
+  `QT_LOGGING_RULES`, `xwd` frames). It replays a recorded history to both apps and can drop live
+  chat through a local IRC proxy; see examples/chatterino/README.md.
+
+Gate: `bun run conformance:http-cache` (two launches sharing one `RNGPUI_CACHE_DIR` against a
+local server that counts hits: cache modes, 304 revalidation, images downloaded once across
+launches, sha256 file layout, no leftover temp files, test mode without a dir stores nothing).
+Rust unit tests in `http_cache.rs` cover freshness, HTTP dates, corruption, eviction order and
+concurrent writers.
 
 ## Secondary windows: `<Window>` (2026-11-08)
 
@@ -447,7 +511,8 @@ gpui Element, `images` loading + animation clock, `events`, `debug` dump/tap).
   rest of the frame, breaking every later element. The chat list records `pointer_inside`
   from its mouse handlers and reads that in prepaint.
 - **Animation**: images load with `cx.fetch_asset::<ImgResourceLoader>` (shared with
-  `<Image>`), and a load completion arms a paint-only refresh instead of notifying the root.
+  `<Image>` and `ImageCache.prefetch`, through the HTTP/2 client and disk cache), and a load
+  completion arms a paint-only refresh instead of notifying the root.
   Frame index comes from one global epoch (all copies in sync, delays ≤10 ms play as 100 ms,
   minimum 20 ms, like Chatterino). Only painted emotes compute a deadline, and
   `images::request_wake` keeps a single timer for the earliest one, so a visible 200 ms GIF

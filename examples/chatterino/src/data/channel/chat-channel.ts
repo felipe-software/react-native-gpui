@@ -55,8 +55,9 @@ export type ChannelDeps = {
     onMessage: (channel: ChatChannel, message: ChatMessage) => void;
     onMessageChanged: (message: ChatMessage) => void;
     loadCheermotes?: (roomId: string) => Promise<CheermoteSet[] | undefined>;
-    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap>;
+    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap> | undefined;
     twitchEmotes: () => Emote[];
+    onEmotesChanged?: (channel: ChatChannel) => void;
 };
 
 const JOIN_PART_MERGE_MS = 500;
@@ -96,6 +97,7 @@ export class ChatChannel implements Channel, ChannelContext {
             loadCheermotes: deps.loadCheermotes,
             loadBadges: deps.loadBadges,
             settings: deps.settings,
+            onChanged: () => deps.onEmotesChanged?.(this),
         });
     }
 
@@ -159,6 +161,17 @@ export class ChatChannel implements Channel, ChannelContext {
 
     clear(): void {
         this.buffer.clear();
+    }
+
+    rebuildHistorical(rebuilt: ChatMessage[]): ChatMessage[] {
+        const replaced: ChatMessage[] = [];
+        for (const message of rebuilt) {
+            const existing = this.buffer.findById(message.id);
+            if (!existing?.flags.historical) continue;
+            if (existing.flags.disabled) message.flags.disabled = true;
+            if (this.buffer.replaceIfChanged(existing, message)) replaced.push(message);
+        }
+        return replaced;
     }
 
     displayName(): string {

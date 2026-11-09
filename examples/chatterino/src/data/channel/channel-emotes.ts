@@ -1,11 +1,12 @@
 import type { Settings } from "../api";
-import { badgeKey, loadChannelBadges, type BadgeMap } from "../badges/twitch";
-import { loadBttvChannel } from "../emotes/bttv";
+import { badgeKey, ivrChannelBadgesUrl, parseIvrBadges, type BadgeMap } from "../badges/twitch";
+import { bttvChannelUrl, parseBttvChannel } from "../emotes/bttv";
 import { defaultCheermotes, type CheermoteSet } from "../emotes/cheermotes";
-import { loadFfzChannel } from "../emotes/ffz";
-import { loadSeventvChannel } from "../emotes/seventv";
+import { ffzChannelUrl, parseFfzChannel } from "../emotes/ffz";
+import { parseSeventvChannel, SEVENTV_TIMEOUT_MS, seventvChannelUrl } from "../emotes/seventv";
 import type { Badge, Emote, EmoteMap } from "../emotes/types";
-import { formatHttpError, type FetchLike } from "../util/http";
+import { formatHttpError, isNotFound, requestCachedJson, type CachedRequest, type FetchLike, type RequestInit } from "../util/http";
+import { markTiming } from "../util/timing";
 
 export type GlobalEmoteSets = { ffz: EmoteMap; bttv: EmoteMap; seventv: EmoteMap };
 
@@ -15,8 +16,9 @@ export type ChannelEmoteDeps = {
     globalBadges: () => BadgeMap;
     systemMessage: (text: string) => void;
     loadCheermotes?: (roomId: string) => Promise<CheermoteSet[] | undefined>;
-    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap>;
+    loadBadges?: (login: string, roomId: string | undefined) => Promise<BadgeMap> | undefined;
     settings?: () => Settings;
+    onChanged?: () => void;
 };
 
 export type EmoteToggles = Pick<
@@ -61,6 +63,15 @@ function customBadge(url: string | undefined, tooltip: string, background?: stri
     return badge;
 }
 
+type ProviderLoad = {
+    provider: string;
+    label: string;
+    url: string;
+    init?: RequestInit;
+    apply: (json: unknown) => void;
+    applyEmpty: () => void;
+};
+
 export class ChannelEmotes {
     ffz: EmoteMap = new Map();
     bttv: EmoteMap = new Map();
@@ -69,8 +80,10 @@ export class ChannelEmotes {
     cheermotes: CheermoteSet[] = defaultCheermotes();
     modBadge: Badge | undefined;
     vipBadge: Badge | undefined;
+    version = 0;
     private loadedRoomId: string | undefined;
     private readyPromise: Promise<void> = Promise.resolve();
+    private cachedPromise: Promise<void> = Promise.resolve();
 
     constructor(private readonly deps: ChannelEmoteDeps) {}
 
@@ -111,40 +124,113 @@ export class ChannelEmotes {
         return this.readyPromise;
     }
 
+    cached(): Promise<void> {
+        return this.cachedPromise;
+    }
+
+    roomId(): string | undefined {
+        return this.loadedRoomId;
+    }
+
     loadBadges(login: string, roomId?: string): Promise<void> {
-        const load = this.deps.loadBadges ? this.deps.loadBadges(login, roomId) : loadChannelBadges(this.deps.fetch, login);
-        return load.then(
-            (badges) => {
+        const failed = (error: unknown) => this.deps.systemMessage(`Failed to load channel badges - ${formatHttpError(error)}`);
+        const helixLoad = this.deps.loadBadges?.(login, roomId);
+        if (helixLoad) {
+            return helixLoad.then((badges) => {
                 this.badges = badges;
-            },
-            (error) => this.deps.systemMessage(`Failed to load channel badges - ${formatHttpError(error)}`),
-        );
+                this.changed();
+            }, failed);
+        }
+        const request = requestCachedJson(this.deps.fetch, ivrChannelBadgesUrl(login), (json) => {
+            this.badges = parseIvrBadges(json);
+            this.changed();
+        });
+        return request.fresh.catch(failed);
     }
 
     loadForRoom(roomId: string, displayName: string): Promise<void> {
         if (this.loadedRoomId === roomId) return this.readyPromise;
         this.loadedRoomId = roomId;
-        const { fetch, systemMessage } = this.deps;
-        const fail = (provider: string) => (error: unknown) =>
-            systemMessage(`Failed to fetch ${provider} channel emotes. (Error: ${formatHttpError(error)})`);
-        const bttv = loadBttvChannel(fetch, roomId, displayName).then((map) => {
-            this.bttv = map;
-        }, fail("BetterTTV"));
-        const ffz = loadFfzChannel(fetch, roomId).then((data) => {
-            this.ffz = data.emotes;
-            this.modBadge = customBadge(data.modBadge, "Moderator", FFZ_MODERATOR_BACKGROUND);
-            this.vipBadge = customBadge(data.vipBadge, "VIP");
-        }, fail("FrankerFaceZ"));
-        const seventv = loadSeventvChannel(fetch, roomId).then((map) => {
-            this.seventv = map;
-        }, fail("7TV"));
+        markTiming("emotes:start", { roomId });
+        const loads: ProviderLoad[] = [
+            {
+                provider: "bttv",
+                label: "BetterTTV",
+                url: bttvChannelUrl(roomId),
+                apply: (json) => {
+                    this.bttv = parseBttvChannel(json, displayName);
+                },
+                applyEmpty: () => {
+                    this.bttv = new Map();
+                },
+            },
+            {
+                provider: "ffz",
+                label: "FrankerFaceZ",
+                url: ffzChannelUrl(roomId),
+                apply: (json) => {
+                    const data = parseFfzChannel(json);
+                    this.ffz = data.emotes;
+                    this.modBadge = customBadge(data.modBadge, "Moderator", FFZ_MODERATOR_BACKGROUND);
+                    this.vipBadge = customBadge(data.vipBadge, "VIP");
+                },
+                applyEmpty: () => {
+                    this.ffz = new Map();
+                },
+            },
+            {
+                provider: "7tv",
+                label: "7TV",
+                url: seventvChannelUrl(roomId),
+                init: { timeoutMs: SEVENTV_TIMEOUT_MS },
+                apply: (json) => {
+                    this.seventv = parseSeventvChannel(json);
+                },
+                applyEmpty: () => {
+                    this.seventv = new Map();
+                },
+            },
+        ];
+        const requests = loads.map((load) => this.request(roomId, load));
         const cheer = this.deps.loadCheermotes?.(roomId).then(
             (sets) => {
-                if (sets && sets.length > 0) this.cheermotes = sets;
+                if (sets && sets.length > 0 && this.loadedRoomId === roomId) this.cheermotes = sets;
             },
             () => undefined,
         );
-        this.readyPromise = Promise.all([bttv, ffz, seventv, cheer]).then(() => undefined);
+        this.cachedPromise = Promise.all(requests.map((request) => request.cached)).then(() => undefined);
+        this.readyPromise = Promise.all([...requests.map((request) => request.fresh), cheer]).then(() => undefined);
         return this.readyPromise;
+    }
+
+    private request(roomId: string, load: ProviderLoad): CachedRequest {
+        const isCurrent = () => this.loadedRoomId === roomId;
+        const request = requestCachedJson(
+            this.deps.fetch,
+            load.url,
+            (json, source) => {
+                if (!isCurrent()) return;
+                load.apply(json);
+                markTiming(`emotes:${load.provider}`, { roomId, source });
+                this.changed();
+            },
+            load.init,
+        );
+        const fresh = request.fresh.catch((error: unknown) => {
+            if (!isCurrent()) return;
+            if (isNotFound(error)) {
+                load.applyEmpty();
+                markTiming(`emotes:${load.provider}`, { roomId, source: "network" });
+                this.changed();
+                return;
+            }
+            this.deps.systemMessage(`Failed to fetch ${load.label} channel emotes. (Error: ${formatHttpError(error)})`);
+        });
+        return { cached: request.cached, fresh };
+    }
+
+    private changed(): void {
+        this.version += 1;
+        this.deps.onChanged?.();
     }
 }

@@ -240,6 +240,14 @@ fn incoming_for_command(value: &Value, reply: Sender<Value>) -> Result<Incoming,
         "dump" => Ok(Incoming::DebugDump { reply }),
         "chatListState" => Ok(Incoming::DebugChatListState {
             id: value.get("id").and_then(Value::as_u64),
+            images: value
+                .get("images")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            timings: value
+                .get("timings")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             reply,
         }),
         "clipboard" => Ok(Incoming::DebugClipboard { reply }),

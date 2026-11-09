@@ -66,7 +66,9 @@ mod frame_clock;
 mod frame_trace;
 mod hit_passthrough;
 mod http;
+mod http_cache;
 mod icons;
+mod image_prefetch;
 mod inspector;
 mod jsc;
 #[cfg(target_os = "linux")]
@@ -2748,6 +2750,8 @@ pub(crate) enum Incoming {
     },
     DebugChatListState {
         id: Option<u64>,
+        images: bool,
+        timings: bool,
         reply: flume::Sender<serde_json::Value>,
     },
     DebugRealScroll {
@@ -2806,6 +2810,10 @@ pub(crate) enum Incoming {
     QuickLook {
         url: String,
         filename: String,
+    },
+    ImagePrefetch {
+        urls: Vec<String>,
+        request_id: Option<u64>,
     },
     DebugDump {
         reply: flume::Sender<serde_json::Value>,
@@ -3070,6 +3078,18 @@ fn schedule_debug_native_driver_sequence(
     window.refresh();
 }
 
+fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Parse one JS-host payload into an `Incoming`. A `$cmd` object is a native host
 /// command; anything else is parsed as an element tree.
 fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
@@ -3187,6 +3207,14 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
                 Some(Incoming::OpenUrl {
                     url: url.to_string(),
                 })
+            }
+            "imagePrefetch" => Some(Incoming::ImagePrefetch {
+                urls: string_list(v.get("urls")),
+                request_id: v.get("requestId").and_then(|x| x.as_u64()),
+            }),
+            "httpPreconnect" => {
+                http::preconnect(string_list(v.get("origins")));
+                None
             }
             "quickLook" => {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
@@ -4004,7 +4032,7 @@ fn main() {
         .expect("JavaScriptCore JIT probe thread stopped");
     let app = gpui::Application::new()
         .with_assets(icons::Assets)
-        .with_http_client(std::sync::Arc::new(http::UreqHttpClient));
+        .with_http_client(std::sync::Arc::new(http::AppHttpClient));
     startup_mark("Application::new");
     app.run(move |cx: &mut App| {
         startup_mark("app.run entered");
@@ -6141,6 +6169,14 @@ fn main() {
                             break;
                         }
                     }
+                    Incoming::ImagePrefetch { urls, request_id } => {
+                        if cx
+                            .update(|cx| image_prefetch::prefetch(urls, request_id, cx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     Incoming::QuickLook { url, filename } => {
                         if !allowed_external_url(&url) {
                             eprintln!("[rngpui] quickLook refused {url}");
@@ -6414,8 +6450,13 @@ fn main() {
                                 crate::anim_overlay::arm_paint_only_frame();
                                 cx.notify();
                             }
-                            Incoming::DebugChatListState { id, reply } => {
-                                let _ = reply.send(elements::chat_list::state_json(id));
+                            Incoming::DebugChatListState {
+                                id,
+                                images,
+                                timings,
+                                reply,
+                            } => {
+                                let _ = reply.send(elements::chat_list::state_json(id, images, timings));
                             }
                             Incoming::DebugClipboard { reply } => {
                                 #[cfg(target_os = "macos")]
@@ -6602,6 +6643,7 @@ fn main() {
                             | Incoming::OpenWindow
                             | Incoming::OpenUrl { .. }
                             | Incoming::QuickLook { .. }
+                            | Incoming::ImagePrefetch { .. }
                             | Incoming::WindowOpen(_)
                             | Incoming::WindowUpdate(_)
                             | Incoming::WindowClose { .. }
@@ -7075,6 +7117,24 @@ mod tests {
         match parse_incoming(&json!({ "$cmd": "openURL", "url": "https://example.com" })) {
             Some(Incoming::OpenUrl { url }) => assert_eq!(url, "https://example.com"),
             _ => panic!("expected openURL command"),
+        }
+    }
+
+    #[test]
+    fn parses_image_prefetch_command() {
+        match parse_incoming(&json!({
+            "$cmd": "imagePrefetch",
+            "urls": ["https://cdn.example/a.webp", 7, "https://cdn.example/b.webp"],
+            "requestId": 3,
+        })) {
+            Some(Incoming::ImagePrefetch { urls, request_id }) => {
+                assert_eq!(
+                    urls,
+                    vec!["https://cdn.example/a.webp", "https://cdn.example/b.webp"]
+                );
+                assert_eq!(request_id, Some(3));
+            }
+            _ => panic!("expected imagePrefetch command"),
         }
     }
 

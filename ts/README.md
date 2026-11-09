@@ -58,7 +58,7 @@ re-renders.
 | --- | --- | --- | --- |
 | `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` `ChatList` | `Image` `Svg` `WebView` |
 
-APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `NativeClipboard`, `fetch`, `crypto`).
+APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `NativeClipboard`, `fetch`, `crypto`, `ImageCache`).
 
 - **Real text input** (`TextInput`) is backed by [gpui-component](https://github.com/longbridge/gpui-component)'s editor: selection, IME, copy/paste, word motion, multiline. Resolved `style.color` and `placeholderTextColor` paint through the native editor. `onChange.nativeEvent` includes `isComposing` and `eventCount`, so controlled inputs can preserve native marked text while React commits catch up.
 - **Text truncation** follows React Native's `numberOfLines`: one-line labels truncate with ellipsis, and multi-line labels are line-clamped.
@@ -407,7 +407,7 @@ Desktop services an app needs beyond rendering. Each one runs off the JS thread 
 native service and resolves a promise when it is done.
 
 ```tsx
-import { LocalStorage, Notifications, Processes, Sound, randomUUID } from "react-native-gpui";
+import { ImageCache, LocalStorage, Notifications, Processes, Sound, randomUUID } from "react-native-gpui";
 
 localStorage.setItem("accounts", JSON.stringify(accounts)); // survives restarts
 await LocalStorage.flush();                                  // optional: write now
@@ -419,6 +419,12 @@ await Sound.play("https://example.com/alert.wav");
 
 const streaming = (await Processes.findRunning(["obs", "obs64.exe"])).length > 0;
 const nonce = randomUUID();
+
+const cached = await fetch(setUrl, { cache: "only-if-cached" }); // 504 when nothing is stored
+const fresh = await fetch(setUrl, { cache: "reload" });           // network, then stored on disk
+
+ImageCache.preconnect(["https://cdn.7tv.app"]);   // open the HTTP/2 connection early
+await ImageCache.prefetch(emoteUrls);             // download + decode before the first paint
 ```
 
 | API | Behavior |
@@ -429,18 +435,31 @@ const nonce = randomUUID();
 | `Sound.play(source = "ping", { volume? }): Promise<void>` | `"ping"` is synthesized; otherwise a file path, `file://` URL, or `http(s)` URL (URL sounds are cached in memory). Sources are capped at 32 MiB and 8 sounds play at once. Decodes WAV (8/16/24/32-bit PCM, 32/64-bit float); other formats reject with the reason. Resolves when playback ends. |
 | `Processes.findRunning(names): Promise<string[]>` | The given names that match a running process, compared case-insensitively against the process name and its executable's file name (Linux `/proc/*/comm` and `cmdline`, macOS `ps`). |
 | `fetch` | `Response` has `status`, `statusText`, `ok` (2xx), `url` (after redirects), `redirected`, `headers` (`get`/`has`/`forEach`/`entries`/`keys`/`values`, iterable), `text()`, `json()`, `arrayBuffer()`, `clone()`. Bodies may be strings, `URLSearchParams`, `ArrayBuffer`, or any typed array/`DataView`; network errors reject with `TypeError`. |
+| `fetch(url, { cache })` | GET requests use the disk cache below only when asked. `"default"` and `"no-store"` go to the network and store nothing. `"reload"` goes to the network and stores a 200. `"force-cache"` returns the stored copy at any age, else fetches and stores. `"only-if-cached"` returns the stored copy or a `504` response without touching the network. `"no-cache"` revalidates a stored copy with `If-None-Match`/`If-Modified-Since` and returns it on `304`. For stale-while-revalidate, start `only-if-cached` and `reload` together and apply each as it arrives. |
+| `ImageCache.prefetch(urls): Promise<boolean>` | Downloads and decodes images into the same cache `<Image>` and `ChatList` read, so their first paint already has them. Resolves `true` when every URL loaded. |
+| `ImageCache.preconnect(origins)` | Opens the HTTP/2 connection to each origin now (a `HEAD /`), so the first images from it skip the TCP and TLS handshakes. |
 | `crypto.getRandomValues`, `crypto.randomUUID` | Backed by the OS random number generator; also exported as `getRandomValues()` / `randomUUID()`. |
 | `NativeClipboard.read(): Promise<string>` | The clipboard's text (`""` when it holds none), read on the main thread. `NativeClipboard.setString(text)` writes it. |
-| `<Image>` | Animated GIF and WebP play, redrawing only when a frame is due; still images never schedule redraws. |
+| `<Image>` | Animated GIF and WebP play, redrawing only when a frame is due; still images never schedule redraws. Remote images load over HTTP/2 (one connection per host) and are kept in the disk cache, so a relaunch shows them without the network; a stored image past its `Cache-Control`/`Expires` lifetime is shown at once and revalidated in the background for the next launch. |
 
 The data file lives at `$XDG_DATA_HOME/<app id>/local-storage.json` (default
 `~/.local/share`) on Linux and `~/Library/Application Support/<app id>/local-storage.json` on
 macOS. The app id is `RNGPUI_APP_ID`, else `RNGPUI_APP_NAME`, else `react-native-gpui`.
 
+The HTTP disk cache lives in `$XDG_CACHE_HOME/<app id>/http/` (default `~/.cache`) on Linux and
+`~/Library/Caches/<app id>/http/` on macOS, one file per URL named by its SHA-256. It holds 200
+responses to GET requests without `Authorization`, `Cookie` or `Range`, skips `no-store`, writes
+atomically (temp file + rename) so two processes of one app can share it, and evicts the least
+recently used files once it passes 256 MB.
+
 | Variable | Effect |
 | --- | --- |
 | `RNGPUI_STORAGE_DIR` | directory holding `local-storage.json`, overriding the data dir |
-| `RNGPUI_TEST_MODE` | without `RNGPUI_STORAGE_DIR`, keeps `localStorage` in memory; also suppresses real notifications and sound output |
+| `RNGPUI_CACHE_DIR` | directory replacing `<cache dir>/<app id>`; the HTTP cache goes in its `http/` folder |
+| `RNGPUI_HTTP_CACHE=0` | turns the HTTP disk cache off |
+| `RNGPUI_HTTP_CACHE_MAX_MB` | size cap of the HTTP disk cache (default 256) |
+| `RNGPUI_HTTP_TRACE=1` | prints one `[rngpui-http]` JSON line per image request (`network`, `cache` or `revalidate`, timings, bytes) |
+| `RNGPUI_TEST_MODE` | without `RNGPUI_STORAGE_DIR`, keeps `localStorage` in memory; without `RNGPUI_CACHE_DIR`, disables the HTTP disk cache; also suppresses real notifications and sound output |
 | `RNGPUI_FAKE_NOTIFICATIONS=<file>` | append each notification as a JSON line instead of showing it |
 | `RNGPUI_FAKE_SOUND_DIR=<dir>` | write each decoded sound as `sound-NNN.wav` instead of playing it |
 | `RNGPUI_FAKE_CLIPBOARD=<file>` | `NativeClipboard` reads and writes this file instead of the clipboard (a headless Wayland window never receives the selection) |
@@ -485,6 +504,7 @@ bun run conformance:chat-list        # ChatList layout, events, selection, scrol
 bun run perf:chat-list               # ChatList CPU and frame numbers under load
 bun run conformance:local-storage    # localStorage across restarts, SIGTERM, corruption
 bun run conformance:platform-services # fetch, crypto, notifications, sound, processes
+bun run conformance:http-cache       # fetch cache modes, image disk cache across launches
 bun run conformance:animated-image   # GIF/WebP frames advance, still images stay idle
 bun run superconductor               # native shell + WebView content hybrid
 ```

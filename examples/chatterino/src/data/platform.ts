@@ -11,6 +11,8 @@ export type PlatformHooks = {
     writeClipboard?: (text: string) => void;
     spawn?: (command: string, args: string[]) => Promise<SpawnResult>;
     isAppActive?: () => boolean;
+    prefetchImages?: (urls: string[]) => void;
+    preconnect?: (origins: string[]) => void;
 };
 
 type MaybeModule = Record<string, unknown>;
@@ -44,6 +46,8 @@ export function platformHooksFrom(gpui: MaybeModule | undefined): PlatformHooks 
     const addSchemeListener = method(gpui.Appearance, "addChangeListener");
     const readClipboard = method(gpui.NativeClipboard, "read") ?? method(gpui.NativeClipboard, "getString");
     const writeClipboard = method(gpui.NativeClipboard, "setString");
+    const prefetch = method(gpui.ImageCache, "prefetch");
+    const preconnect = method(gpui.ImageCache, "preconnect");
     const hooks: PlatformHooks = {};
     const appState = gpui.AppState as { currentState?: string } | undefined;
     if (appState && "currentState" in appState) hooks.isAppActive = () => appState.currentState === "active";
@@ -62,6 +66,8 @@ export function platformHooksFrom(gpui: MaybeModule | undefined): PlatformHooks 
     if (writeClipboard) hooks.writeClipboard = (text) => void writeClipboard(text);
     const spawn = spawnHook(gpui.Processes);
     if (spawn) hooks.spawn = spawn;
+    if (prefetch) hooks.prefetchImages = (urls) => void prefetch(urls);
+    if (preconnect) hooks.preconnect = (origins) => void preconnect(origins);
     return hooks;
 }
 

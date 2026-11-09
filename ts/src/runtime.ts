@@ -140,6 +140,7 @@ export type BridgeEvent =
     | { type: "command"; id: string }
     | { type: "appearance"; colorScheme: "light" | "dark" }
     | { type: "rendererProvenance"; requestId: number; provenance: RendererProvenance }
+    | { type: "imagePrefetch"; requestId: number; loaded: boolean }
     | {
           type: "window";
           windowId: number;

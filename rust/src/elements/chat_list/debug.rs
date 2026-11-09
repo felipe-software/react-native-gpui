@@ -42,6 +42,11 @@ pub fn summary(list: &ListState) -> Value {
     json!({
         "messages": list.entries.len(),
         "visibleMessages": list.rows.len(),
+        "visibleHistorical": list
+            .rows
+            .iter()
+            .filter(|row| list.entry(row.seq).is_some_and(|entry| entry.message.historical))
+            .count(),
         "cachedLayouts": list.layouts_cached,
         "layoutsBuilt": list.stats.layouts_built,
         "framesLaidOut": list.stats.frames,
@@ -170,7 +175,34 @@ pub fn dump(list_id: u64) -> Option<(Value, Vec<Value>)> {
     .flatten()
 }
 
-pub fn state_json(list_id: Option<u64>) -> Value {
+fn visible_images(list: &ListState) -> Vec<Value> {
+    let mut images = Vec::new();
+    for row in &list.rows {
+        let Some(entry) = list.entry(row.seq) else {
+            continue;
+        };
+        let message = &entry.message;
+        for item in row.layout.items.iter() {
+            let ItemKind::Image(image) = &item.kind else {
+                continue;
+            };
+            let kind = match element_for(message, item.part, item.element) {
+                Some(ChatElement::Badge(_)) => "badge",
+                _ => "emote",
+            };
+            images.push(json!({
+                "messageId": message.id.as_ref(),
+                "historical": message.historical,
+                "kind": kind,
+                "url": image.url.as_ref(),
+                "state": images::state_label(&image.url),
+            }));
+        }
+    }
+    images
+}
+
+pub fn state_json(list_id: Option<u64>, include_images: bool, include_timings: bool) -> Value {
     let ids = match list_id {
         Some(id) => vec![id],
         None => state::list_ids(),
@@ -181,11 +213,25 @@ pub fn state_json(list_id: Option<u64>) -> Value {
             state::with_existing(id, |list| {
                 let mut value = summary(list);
                 value["id"] = json!(id);
+                if include_images {
+                    value["visibleImages"] = Value::Array(visible_images(list));
+                    value["visibleIds"] = Value::Array(
+                        list.rows
+                            .iter()
+                            .filter_map(|row| list.entry(row.seq))
+                            .map(|entry| json!(entry.message.id.as_ref()))
+                            .collect(),
+                    );
+                }
                 value
             })
         })
         .collect();
-    json!({ "ok": true, "type": "chatList", "lists": lists })
+    let mut response = json!({ "ok": true, "type": "chatList", "lists": lists });
+    if include_timings {
+        response["imageTimings"] = images::timings_json();
+    }
+    response
 }
 
 pub fn debug_tap(list_id: u64, x: f32, y: f32, button: MouseButton) -> Option<Value> {

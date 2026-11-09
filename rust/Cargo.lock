@@ -5582,11 +5582,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "tungstenite",
  "ureq",
  "url",
  "wayland-client",
  "zbus",
+ "zed-reqwest",
 ]
 
 [[package]]

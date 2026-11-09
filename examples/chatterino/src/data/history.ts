@@ -8,8 +8,12 @@ import { formatLongDate, localDayKey, startOfLocalDay } from "./util/time";
 
 export type RecentMessagesResponse = { messages?: string[]; error?: string | null; error_code?: string | null };
 
-export function recentMessagesUrl(channel: string, limit: number): string {
-    return `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=${limit}`;
+const RECENT_MESSAGES_TEMPLATE = "https://recent-messages.robotty.de/api/v2/recent-messages/%1";
+
+export function recentMessagesUrl(channel: string, limit: number, template: string = RECENT_MESSAGES_TEMPLATE): string {
+    const base = template.replace("%1", encodeURIComponent(channel));
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}limit=${limit}`;
 }
 
 export function parseRecentMessages(response: RecentMessagesResponse): IrcMessage[] {
@@ -59,9 +63,14 @@ export function buildHistory(channel: ChatChannel, lines: IrcMessage[], today: n
     return sink.list;
 }
 
-export async function fetchHistory(fetchFn: FetchLike, channel: string, limit: number): Promise<{ lines: IrcMessage[]; notice?: string }> {
+export async function fetchHistory(
+    fetchFn: FetchLike,
+    channel: string,
+    limit: number,
+    template?: string,
+): Promise<{ lines: IrcMessage[]; notice?: string }> {
     try {
-        const response = await requestJson<RecentMessagesResponse>(fetchFn, recentMessagesUrl(channel, limit), { timeoutMs: 20_000 });
+        const response = await requestJson<RecentMessagesResponse>(fetchFn, recentMessagesUrl(channel, limit, template), { timeoutMs: 20_000 });
         const lines = parseRecentMessages(response);
         const recovering = response.error_code === "channel_not_joined" && lines.length > 0;
         const notice = recovering ? "Message history service recovering, there may be gaps in the message history." : undefined;

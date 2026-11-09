@@ -647,34 +647,158 @@ struct FetchReq {
     // bridge sets this for byte payloads like the voice POST that a string can't carry.
     #[serde(default, rename = "bodyBase64")]
     body_base64: Option<String>,
+    #[serde(default)]
+    cache: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FetchCacheMode {
+    Default,
+    NoStore,
+    Reload,
+    NoCache,
+    ForceCache,
+    OnlyIfCached,
+}
+
+impl FetchCacheMode {
+    fn parse(value: Option<&str>) -> Self {
+        match value.unwrap_or("default") {
+            "no-store" => Self::NoStore,
+            "reload" => Self::Reload,
+            "no-cache" => Self::NoCache,
+            "force-cache" => Self::ForceCache,
+            "only-if-cached" => Self::OnlyIfCached,
+            _ => Self::Default,
+        }
+    }
+
+    fn stores(self) -> bool {
+        matches!(self, Self::Reload | Self::NoCache | Self::ForceCache)
+    }
+}
+
+struct FetchedResponse {
+    status: u16,
+    status_text: String,
+    final_url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+fn fetch_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .max_idle_connections_per_host(8)
+            .build()
+    })
 }
 
 fn do_fetch(req: FetchReq) -> String {
-    let method = req.method.unwrap_or_else(|| "GET".into());
-    let mut r = ureq::request(&method, &req.url);
+    let method = req.method.clone().unwrap_or_else(|| "GET".into());
+    let mode = FetchCacheMode::parse(req.cache.as_deref());
+    let has_body = req.body.is_some() || req.body_base64.is_some();
+    let cache =
+        if method.eq_ignore_ascii_case("GET") && !has_body && mode != FetchCacheMode::Default {
+            crate::http_cache::shared()
+        } else {
+            None
+        };
+    let cached = match (mode, cache) {
+        (
+            FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached | FetchCacheMode::NoCache,
+            Some(cache),
+        ) => cache.get(&req.url),
+        _ => None,
+    };
+    if let Some(entry) = &cached
+        && mode != FetchCacheMode::NoCache
+    {
+        return cached_payload(req.id, &req.url, entry);
+    }
+    if mode == FetchCacheMode::OnlyIfCached {
+        return json!({
+            "id": req.id,
+            "ok": false,
+            "status": 504,
+            "statusText": "Gateway Timeout",
+            "url": req.url,
+            "redirected": false,
+            "headers": [],
+            "body": "",
+        })
+        .to_string();
+    }
+    let validators = cached
+        .as_ref()
+        .map(|entry| entry.validators())
+        .unwrap_or_default();
+    let fetched = match network_fetch(&req, &method, &validators) {
+        Ok(fetched) => fetched,
+        Err(error) => {
+            return json!({"id": req.id, "ok": false, "status": 0, "error": error}).to_string();
+        }
+    };
+    if let (Some(cache), Some(entry)) = (cache, &cached)
+        && fetched.status == 304
+    {
+        let refreshed = cache.refresh(&req.url, entry, &fetched.headers);
+        return cached_payload(req.id, &req.url, &refreshed);
+    }
+    let gone = fetched.status == 404 || fetched.status == 410;
+    if let Some(cache) = cache
+        && mode.stores()
+        && gone
+    {
+        cache.remove(&req.url);
+    }
+    if let Some(cache) = cache
+        && mode.stores()
+        && fetched.status == 200
+    {
+        cache.put(
+            &req.url,
+            &crate::http_cache::Stored {
+                final_url: &fetched.final_url,
+                status: fetched.status,
+                status_text: &fetched.status_text,
+                headers: &fetched.headers,
+                body: &fetched.body,
+            },
+        );
+    }
+    fetch_payload(req.id, &req.url, fetched)
+}
+
+fn network_fetch(
+    req: &FetchReq,
+    method: &str,
+    validators: &[(&'static str, String)],
+) -> Result<FetchedResponse, String> {
+    let mut r = fetch_agent().request(method, &req.url);
     if let Some(h) = &req.headers {
         for (k, v) in h {
             r = r.set(k, v);
         }
     }
+    for (name, value) in validators {
+        r = r.set(name, value);
+    }
     let resp = if let Some(b64) = &req.body_base64 {
         match base64::engine::general_purpose::STANDARD.decode(b64) {
             Ok(bytes) => r.send_bytes(&bytes),
-            Err(e) => {
-                return json!({"id": req.id, "ok": false, "status": 0, "error": format!("bad body_base64: {e}")}).to_string();
-            }
+            Err(e) => return Err(format!("bad body_base64: {e}")),
         }
     } else {
-        match req.body {
-            Some(b) => r.send_string(&b),
+        match &req.body {
+            Some(b) => r.send_string(b),
             None => r.call(),
         }
     };
     match resp {
-        Ok(resp) | Err(ureq::Error::Status(_, resp)) => fetch_response(req.id, &req.url, resp),
-        Err(e) => {
-            json!({"id": req.id, "ok": false, "status": 0, "error": e.to_string()}).to_string()
-        }
+        Ok(resp) | Err(ureq::Error::Status(_, resp)) => read_response(resp),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -703,27 +827,37 @@ fn url_without_fragment(raw: &str) -> String {
     }
 }
 
-fn fetch_response(id: u64, request_url: &str, resp: ureq::Response) -> String {
+fn read_response(resp: ureq::Response) -> Result<FetchedResponse, String> {
     use std::io::Read as _;
     let status = resp.status();
     let status_text = resp.status_text().to_string();
     let final_url = resp.get_url().to_string();
-    let redirected = url_without_fragment(request_url) != url_without_fragment(&final_url);
     let headers = response_header_pairs(&resp);
-    let mut bytes = Vec::new();
-    if let Err(error) = resp.into_reader().read_to_end(&mut bytes) {
-        return json!({"id": id, "ok": false, "status": 0, "error": format!("reading the response body failed: {error}")}).to_string();
-    }
+    let mut body = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut body)
+        .map_err(|error| format!("reading the response body failed: {error}"))?;
+    Ok(FetchedResponse {
+        status,
+        status_text,
+        final_url,
+        headers,
+        body,
+    })
+}
+
+fn fetch_payload(id: u64, request_url: &str, fetched: FetchedResponse) -> String {
+    let redirected = url_without_fragment(request_url) != url_without_fragment(&fetched.final_url);
     let mut payload = json!({
         "id": id,
-        "ok": (200..300).contains(&status),
-        "status": status,
-        "statusText": status_text,
-        "url": final_url,
+        "ok": (200..300).contains(&fetched.status),
+        "status": fetched.status,
+        "statusText": fetched.status_text,
+        "url": fetched.final_url,
         "redirected": redirected,
-        "headers": headers,
+        "headers": fetched.headers,
     });
-    match String::from_utf8(bytes) {
+    match String::from_utf8(fetched.body) {
         Ok(text) => payload["body"] = json!(text),
         Err(error) => {
             payload["bodyBase64"] =
@@ -731,6 +865,20 @@ fn fetch_response(id: u64, request_url: &str, resp: ureq::Response) -> String {
         }
     }
     payload.to_string()
+}
+
+fn cached_payload(id: u64, request_url: &str, entry: &crate::http_cache::Entry) -> String {
+    fetch_payload(
+        id,
+        request_url,
+        FetchedResponse {
+            status: entry.meta.status,
+            status_text: entry.meta.status_text.clone(),
+            final_url: entry.meta.final_url.clone(),
+            headers: entry.meta.headers.clone(),
+            body: entry.body.clone(),
+        },
+    )
 }
 
 extern "C" fn host_fetch(_ud: *mut c_void, arg: *const c_char) {

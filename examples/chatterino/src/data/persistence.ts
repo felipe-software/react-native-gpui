@@ -31,7 +31,10 @@ export const STORAGE_KEYS = {
     settings: "chatterino-gpui/v1/settings",
     layout: "chatterino-gpui/v1/layout",
     accounts: "chatterino-gpui/v1/accounts",
+    roomIds: "chatterino-gpui/v1/room-ids",
 } as const;
+
+const ROOM_ID_LIMIT = 500;
 
 const THEMES: readonly ThemeName[] = ["white", "light", "dark", "black"];
 const STREAMER_MODES: Settings["streamerMode"][] = ["off", "on", "auto"];
@@ -426,6 +429,29 @@ export function save(storage: StorageLike, key: string, value: unknown): void {
     } catch (error) {
         console.warn(`failed to persist ${key}`, error);
     }
+}
+
+export function roomIdCache(storage: StorageLike): { get(channel: string): string | undefined; set(channel: string, roomId: string): void } {
+    const read = (): Record<string, string> => {
+        const value = readJson(storage, STORAGE_KEYS.roomIds);
+        if (!isObject(value)) return {};
+        const ids: Record<string, string> = {};
+        for (const [channel, roomId] of Object.entries(value)) {
+            if (isString(roomId) && /^\d+$/.test(roomId as string)) ids[channel] = roomId as string;
+        }
+        return ids;
+    };
+    return {
+        get: (channel) => read()[channel],
+        set: (channel, roomId) => {
+            const ids = read();
+            if (ids[channel] === roomId) return;
+            delete ids[channel];
+            ids[channel] = roomId;
+            const entries = Object.entries(ids);
+            save(storage, STORAGE_KEYS.roomIds, Object.fromEntries(entries.slice(Math.max(0, entries.length - ROOM_ID_LIMIT))));
+        },
+    };
 }
 
 export function memoryStorage(): StorageLike {

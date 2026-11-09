@@ -34,6 +34,90 @@ Real keystrokes, clicks and drags go through the control socket (`realKey`, `rea
 `realmove`, `realup`, `realcontext`, `realscroll`). `globalThis.__chatterinoDebug()` returns the
 app services (core, layout actions, overlays, hit areas) for `evalJs` probes.
 
+## Emote loading
+
+Emotes come up as fast as the network allows, and a relaunch shows them with the history:
+
+- **Images** load over HTTP/2 and land in the HTTP disk cache (`~/.cache/com.chatterino.gpui/http`
+  on Linux, `~/Library/Caches/com.chatterino.gpui/http` on macOS; see `ts/README.md`), so a
+  relaunch reads them from disk. The emote CDNs are preconnected at startup
+  (`ImageCache.preconnect`).
+- **Room ids** come from ivr.fi as soon as a channel is joined, in parallel with IRC, and are kept
+  in `localStorage` (`chatterino-gpui/v1/room-ids`), so the next launch starts the channel's emote
+  sets right away instead of waiting for `ROOMSTATE`.
+- **Emote sets and badges** (BTTV, FFZ, 7TV channel and global sets, ivr.fi badges, Chatterino and
+  BTTV user badges) are read from the disk cache first (`fetch(url, { cache: "only-if-cached" })`)
+  and refreshed from the network at the same time (`cache: "reload"`), see `requestCachedJson` in
+  `src/data/util/http.ts`. A refresh with an identical body is ignored.
+- **History** is shown as soon as it arrives. It waits at most 500 ms, and only for the cached
+  sets. When a set arrives later, the history is rebuilt from its IRC lines and only messages
+  whose output changed are patched in, so words turn into emotes in place.
+- **Prefetch**: the images of the last 20 history messages are handed to `ImageCache.prefetch`
+  before the history is appended, so the first paint usually finds them downloaded and decoded.
+
+Debug seams, read from the environment:
+
+| Variable | Effect |
+| --- | --- |
+| `CHATTERINO_TIMING=1` | logs `[chatterino-timing] {event, t}` lines: join, ivr lookup, `ROOMSTATE`, each emote set and its source, history fetched / prepended / rebuilt |
+| `CHATTERINO_IRC_URL` | IRC WebSocket URL instead of `wss://irc-ws.chat.twitch.tv:443` |
+| `CHATTERINO_RECENT_MESSAGES_URL` | recent-messages URL template, `%1` is the channel (the same format as Chatterino's `CHATTERINO2_RECENT_MESSAGES_URL`) |
+
+### Timing emotes against Chatterino
+
+`scripts/emote-timing.mjs` (Bun) launches this app headless and the Flatpak Chatterino 2.5.5 on a
+private Xvfb, one run per channel, cold (empty caches) and then warm (second launch). Run it with
+`env -u DISPLAY`; it needs the shared `rngpui-headless-0` compositor (root `AGENTS.md`).
+
+```sh
+env -u DISPLAY bun scripts/emote-timing.mjs                       # xqc, forsen, sodapoppin, both apps
+env -u DISPLAY bun scripts/emote-timing.mjs --layout main --repeat 2
+env -u DISPLAY bun scripts/emote-timing.mjs --apps baseline,ours,chatterino \
+    --baseline-service /tmp/old/rngpui-service --baseline-bundle /tmp/old/chatterino.js --repeat 2
+```
+
+- **History is replayed**: each channel's recent messages are recorded once into
+  `<work>/history` and served to both apps (`CHATTERINO2_RECENT_MESSAGES_URL` /
+  `CHATTERINO_RECENT_MESSAGES_URL`), so both show the same first screen and runs compare.
+  `--history live` asks robotty instead, `--record` records again.
+- **Live chat is dropped** by default: `scripts/irc-quiet-proxy.mjs` forwards real Twitch IRC
+  (so `JOIN` and `ROOMSTATE` keep their real timing) but drops `PRIVMSG`, `USERNOTICE`,
+  `CLEARCHAT` and `CLEARMSG`, so the first screen is exactly the tail of the history.
+  `--mode live` connects directly.
+- **Our app** is measured from spawn through the debug socket: `chatListState` with
+  `images: true` every 25 ms, then `timings: true` for each image's requested, settled and
+  first-painted time. "First screen" is the messages visible when history first appears,
+  followed by id until the end of the run, so emotes added by a later rebuild count.
+- **Chatterino** is measured from the `chatterino` process start (`/proc/<pid>/stat`) with
+  `QT_LOGGING_RULES=chatterino.http.debug=true`: history is the "Successfully loaded recent
+  messages" line, emotes are `Get 200` / `Get [CACHED] 200` lines for emote CDN URLs. It only
+  loads images for visible messages, so its first screen is the burst of emote loads after the
+  history (until a 2 s gap). `xwd` frames of `:98` land in the profile's `frames-<state>/` as PNGs
+  with a colorful-pixel series (`colorful.json`) as a visual cross-check.
+- **Order**: with `--repeat 2` the app order flips each round, since whichever app asks first
+  warms the CDN edge for the other. `cdn.7tv.app` is about 280 ms away from roberto and serves
+  slowly and unevenly (12 small images: 1.9-9 s between back-to-back runs), so cold runs with
+  many 7TV emotes vary a lot.
+
+Measured on roberto on 2026-11-08 (medians of 2 runs, replayed history, live chat dropped, seconds
+from process start; "before" is the build before the HTTP/2 client, disk cache and data changes):
+
+| Channel | Start | History shown before / now / Chatterino | All first-screen emotes painted before / now / Chatterino |
+| --- | --- | --- | --- |
+| xqc | cold | 1.76 / 0.30 / 1.57 | 2.02 (4) / 5.83 (7; the 4 non-7TV at 0.31) / 1.80 (4) |
+| xqc | warm | 2.69 / 0.32 / 1.47 | 2.85 (4) / 0.32 (7) / 3.34 (12) |
+| forsen | cold | 2.40 / 0.28 / 1.54 | 2.68 (7) / 0.57 (8) / 1.80 (3) |
+| forsen | warm | 1.63 / 0.28 / 1.36 | 2.05 (7) / 0.29 (8) / 1.59 (8) |
+| sodapoppin | cold | 1.92 / 0.26 / 1.48 | 3.13 (1) / 11.80 (8, 7 of them 7TV) / 1.64 (3) |
+| sodapoppin | warm | 2.03 / 0.31 / 1.88 | 3.08 (1) / 0.31 (7) / 6.83 (14) |
+
+Numbers in parentheses are the emotes on that first screen. On a cold start Chatterino and the
+old build both build the history before the channel's 7TV set arrives (about 3.2 s from 7tv.io),
+so those words stay text; this app turns them into emotes when the set arrives, and then waits on
+the 7TV CDN. With the real history service (`--history live --mode live`), history and the first
+emote showed at about 1.9 s cold here, against 3.6-3.9 s for Chatterino, which asks for history
+only after `ROOMSTATE`.
+
 ## What is implemented
 
 | Area | Behavior |

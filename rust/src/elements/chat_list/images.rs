@@ -1,10 +1,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::FutureExt as _;
-use gpui::{App, ImgResourceLoader, RenderImage, Resource, SharedString, SharedUri, Window};
+use gpui::{App, ImgResourceLoader, RenderImage, Resource, SharedString, Window};
+use serde_json::{Value, json};
 
 const MIN_FRAME_DELAY_MS: u64 = 20;
 const SHORT_FRAME_DELAY_MS: u64 = 100;
@@ -70,10 +71,14 @@ enum Slot {
 struct Entry {
     slot: Slot,
     last_used: Instant,
+    requested_at: Instant,
+    settled_at: Option<Instant>,
+    painted_at: Option<Instant>,
 }
 
 thread_local! {
     static EPOCH: Instant = Instant::now();
+    static WALL_CLOCK: (Instant, SystemTime) = (Instant::now(), SystemTime::now());
     static IMAGES: RefCell<HashMap<SharedString, Entry>> = RefCell::new(HashMap::new());
     static WAKES: RefCell<HashMap<u64, Instant>> = RefCell::new(HashMap::new());
     static LAST_SWEEP: Cell<Option<Instant>> = const { Cell::new(None) };
@@ -85,12 +90,11 @@ fn epoch() -> Instant {
 }
 
 fn resource_for(url: &str) -> Resource {
-    let is_remote = url.starts_with("http://") || url.starts_with("https://");
-    if is_remote {
-        Resource::Uri(SharedUri::from(url.to_string()))
-    } else {
-        Resource::Path(std::path::Path::new(url).into())
-    }
+    crate::image_prefetch::resource_for(url)
+}
+
+pub fn is_tracked(url: &str) -> bool {
+    IMAGES.with_borrow(|images| images.contains_key(url))
 }
 
 pub fn image(
@@ -106,7 +110,10 @@ pub fn image(
         images.get_mut(url).map(|entry| {
             entry.last_used = now;
             match &entry.slot {
-                Slot::Ready(image) => Some(Some(image.clone())),
+                Slot::Ready(image) => {
+                    entry.painted_at.get_or_insert(now);
+                    Some(Some(image.clone()))
+                }
                 Slot::Loading | Slot::Failed => Some(None),
             }
         })
@@ -126,6 +133,7 @@ fn start_loading(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Arc<LoadedImage>> {
+    crate::image_prefetch::adopt(&url);
     let resource = resource_for(&url);
     let (task, _) = cx.fetch_asset::<ImgResourceLoader>(&resource);
     if let Some(result) = task.clone().now_or_never() {
@@ -134,12 +142,16 @@ fn start_loading(
             Slot::Ready(image) => Some(image.clone()),
             _ => None,
         };
+        let painted_at = ready.as_ref().map(|_| now);
         IMAGES.with_borrow_mut(|images| {
             images.insert(
                 url,
                 Entry {
                     slot,
                     last_used: now,
+                    requested_at: now,
+                    settled_at: Some(now),
+                    painted_at,
                 },
             )
         });
@@ -151,6 +163,9 @@ fn start_loading(
             Entry {
                 slot: Slot::Loading,
                 last_used: now,
+                requested_at: now,
+                settled_at: None,
+                painted_at: None,
             },
         )
     });
@@ -161,6 +176,7 @@ fn start_loading(
             IMAGES.with_borrow_mut(|images| {
                 if let Some(entry) = images.get_mut(&url) {
                     entry.slot = slot;
+                    entry.settled_at = Some(Instant::now());
                 }
             });
             let _ = cx.update(|window, _cx| {
@@ -235,6 +251,53 @@ pub fn loaded_count() -> (usize, usize, usize) {
     })
 }
 
+pub fn state_label(url: &str) -> &'static str {
+    IMAGES.with_borrow(|images| match images.get(url).map(|entry| &entry.slot) {
+        Some(Slot::Ready(_)) => "ready",
+        Some(Slot::Loading) => "loading",
+        Some(Slot::Failed) => "failed",
+        None => "unrequested",
+    })
+}
+
+fn wall_ms(instant: Instant) -> f64 {
+    let (base_instant, base_wall) = WALL_CLOCK.with(|clock| *clock);
+    let base_ms = base_wall
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let offset_ms = if instant >= base_instant {
+        instant.duration_since(base_instant).as_secs_f64() * 1000.0
+    } else {
+        -(base_instant.duration_since(instant).as_secs_f64() * 1000.0)
+    };
+    base_ms + offset_ms
+}
+
+pub fn timings_json() -> Value {
+    IMAGES.with_borrow(|images| {
+        let entries: Vec<Value> = images
+            .iter()
+            .map(|(url, entry)| {
+                let (state, frames) = match &entry.slot {
+                    Slot::Ready(image) => ("ready", image.data.frame_count()),
+                    Slot::Loading => ("loading", 0),
+                    Slot::Failed => ("failed", 0),
+                };
+                json!({
+                    "url": url.as_ref(),
+                    "state": state,
+                    "frames": frames,
+                    "requestedMs": wall_ms(entry.requested_at),
+                    "settledMs": entry.settled_at.map(wall_ms),
+                    "paintedMs": entry.painted_at.map(wall_ms),
+                })
+            })
+            .collect();
+        Value::Array(entries)
+    })
+}
+
 pub fn sweep(now: Instant, window: &mut Window, cx: &mut App) {
     let due = LAST_SWEEP
         .get()
@@ -243,6 +306,7 @@ pub fn sweep(now: Instant, window: &mut Window, cx: &mut App) {
         return;
     }
     LAST_SWEEP.set(Some(now));
+    crate::image_prefetch::sweep(now, cx);
     let stale: Vec<(SharedString, Option<Arc<LoadedImage>>)> = IMAGES.with_borrow_mut(|images| {
         let keys: Vec<SharedString> = images
             .iter()

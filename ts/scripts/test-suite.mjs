@@ -73,6 +73,7 @@ const tasks = [
     { name: "pseudo-driver", command: "node", args: ["scripts/pseudo-driver-conformance.mjs"], cwd: root, timeoutMs: 20_000 },
     { name: "local-storage", command: "node", args: ["scripts/local-storage-conformance.mjs"], cwd: root, timeoutMs: 30_000 },
     { name: "platform-services", command: "node", args: ["scripts/platform-services-conformance.mjs"], cwd: root, timeoutMs: 30_000 },
+    { name: "http-cache", command: "node", args: ["scripts/http-cache-conformance.mjs"], cwd: root, timeoutMs: 90_000 },
     { name: "animated-image", command: "node", args: ["scripts/animated-image-conformance.mjs"], cwd: root, timeoutMs: 60_000 },
 ];
 

@@ -262,6 +262,7 @@
         headers: headers,
         body: body,
         bodyBase64: bodyBase64,
+        cache: init.cache || 'default',
       }));
     });
   };

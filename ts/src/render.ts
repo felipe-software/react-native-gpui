@@ -22,7 +22,7 @@ import { applyAppStateEvent, applyWindowFocus } from "./app-state";
 // coalesced event batches (resize/layout/scroll floods) dispatch inside one React update so
 // a window resize produces one re-render per batch instead of one per event.
 setEventBatcher((run) => (Reconciler as { batchedUpdates(fn: (a: unknown) => void, a?: unknown): void }).batchedUpdates(run));
-import { AppCommands, NativeMenus, resolveRendererProvenance, setCommandSink } from "./commands";
+import { AppCommands, NativeMenus, resolveImagePrefetch, resolveRendererProvenance, setCommandSink } from "./commands";
 import { Dimensions } from "./Dimensions";
 import { applyNativeColorScheme, setAppearanceUpdateSink } from "./colors";
 import { dispatchPseudo } from "./platform-driver";
@@ -195,6 +195,10 @@ export function createRoot(options: RootOptions = {}): Root {
         }
         if (e.type === "appState") {
             applyAppStateEvent(e.state, e.windowId);
+            return;
+        }
+        if (e.type === "imagePrefetch") {
+            resolveImagePrefetch(e.requestId, e.loaded);
             return;
         }
         // renderer→JS pseudo lane: a native hover/press flip routes to the platform

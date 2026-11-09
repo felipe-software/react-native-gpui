@@ -50,6 +50,10 @@ fn emit_value(v: serde_json::Value) {
     emit_line(&v.to_string());
 }
 
+pub fn image_prefetched(request_id: u64, loaded: bool) {
+    emit_value(json!({ "type": "imagePrefetch", "requestId": request_id, "loaded": loaded }));
+}
+
 pub fn ready(width: f32, height: f32) {
     emit_value(json!({ "type": "ready", "width": width, "height": height }));
 }
