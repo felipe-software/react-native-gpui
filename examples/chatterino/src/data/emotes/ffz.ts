@@ -1,4 +1,3 @@
-import { HttpError, requestJson, type FetchLike } from "../util/http";
 import type { Emote, EmoteMap } from "./types";
 
 type FfzUrls = Record<string, string | null | undefined>;
@@ -79,15 +78,8 @@ export function parseFfzChannel(json: unknown): FfzChannelData {
     };
 }
 
-export async function loadFfzGlobal(fetchFn: FetchLike): Promise<EmoteMap> {
-    return parseFfzGlobal(await requestJson(fetchFn, "https://api.frankerfacez.com/v1/set/global"));
-}
+export const FFZ_GLOBAL_URL = "https://api.frankerfacez.com/v1/set/global";
 
-export async function loadFfzChannel(fetchFn: FetchLike, roomId: string): Promise<FfzChannelData> {
-    try {
-        return parseFfzChannel(await requestJson(fetchFn, `https://api.frankerfacez.com/v1/room/id/${roomId}`));
-    } catch (error) {
-        if (error instanceof HttpError && error.status === 404) return { emotes: new Map() };
-        throw error;
-    }
+export function ffzChannelUrl(roomId: string): string {
+    return `https://api.frankerfacez.com/v1/room/id/${roomId}`;
 }

@@ -4,6 +4,7 @@ import { channelFromTarget, type IrcMessage } from "../irc/message";
 import type { Tint } from "../messages/model";
 import { buildNotice } from "../messages/notice";
 import type { TwitchConnections } from "../twitch/connections";
+import { markTiming } from "../util/timing";
 
 export type DispatchDeps = {
     channel: (name: string) => ChatChannel | undefined;
@@ -83,6 +84,7 @@ export class IrcDispatcher {
     private roomState(channel: ChatChannel, message: IrcMessage): void {
         const hadRoomId = !!channel.info().roomId;
         const roomId = channel.handleRoomState(message);
+        markTiming("irc:roomstate", { channel: channel.name, roomId, hadRoomId });
         if (roomId && !hadRoomId) this.deps.onRoomId(channel, roomId);
     }
 

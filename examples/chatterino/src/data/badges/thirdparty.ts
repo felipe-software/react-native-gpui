@@ -1,4 +1,3 @@
-import { requestJson, type FetchLike } from "../util/http";
 import type { Badge } from "../emotes/types";
 
 export type UserBadgeMap = Map<string, Badge>;
@@ -47,10 +46,6 @@ export function parseBttvBadges(json: unknown): UserBadgeMap {
     return map;
 }
 
-export async function loadChatterinoBadges(fetchFn: FetchLike): Promise<UserBadgeMap> {
-    return parseChatterinoBadges(await requestJson(fetchFn, "https://api.chatterino.com/badges"));
-}
+export const CHATTERINO_BADGES_URL = "https://api.chatterino.com/badges";
 
-export async function loadBttvBadges(fetchFn: FetchLike): Promise<UserBadgeMap> {
-    return parseBttvBadges(await requestJson(fetchFn, "https://api.betterttv.net/3/cached/badges/twitch"));
-}
+export const BTTV_BADGES_URL = "https://api.betterttv.net/3/cached/badges/twitch";

@@ -37,3 +37,7 @@ pub fn selection_changed_at() -> Option<std::time::Instant> {
 pub fn forget_window(window: u64) {
     images::forget_window(window);
 }
+
+pub fn tracks_image(url: &str) -> bool {
+    images::is_tracked(url)
+}

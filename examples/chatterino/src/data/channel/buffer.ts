@@ -116,6 +116,17 @@ export class MessageBuffer implements MessageSink {
         this.onChanged?.(replacement);
     }
 
+    replaceIfChanged(previous: ChatMessage, replacement: ChatMessage): boolean {
+        if (!this.isCurrent(previous)) return false;
+        const before = JSON.stringify(this.rendered(previous));
+        replacement.id = previous.id;
+        const after = this.render(replacement);
+        if (JSON.stringify(after) === before) return false;
+        this.replace(previous, replacement);
+        this.renderCache.set(replacement.id, after);
+        return true;
+    }
+
     changed(message: ChatMessage, kind: DirtyKind = "disabled"): void {
         if (this.byId.get(message.id) !== message) return;
         this.renderCache.delete(message.id);

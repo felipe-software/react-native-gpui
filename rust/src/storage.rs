@@ -141,15 +141,15 @@ pub enum DataDirConvention {
     Xdg,
 }
 
-const DATA_DIR_CONVENTION: DataDirConvention = if cfg!(target_os = "macos") {
+pub(crate) const DATA_DIR_CONVENTION: DataDirConvention = if cfg!(target_os = "macos") {
     DataDirConvention::MacOs
 } else {
     DataDirConvention::Xdg
 };
 
-type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+pub(crate) type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
-fn lookup(env: EnvLookup, name: &str) -> Option<String> {
+pub(crate) fn lookup(env: EnvLookup, name: &str) -> Option<String> {
     env(name).filter(|value| !value.trim().is_empty())
 }
 

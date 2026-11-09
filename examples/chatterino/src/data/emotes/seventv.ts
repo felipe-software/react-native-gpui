@@ -1,4 +1,3 @@
-import { HttpError, requestJson, type FetchLike } from "../util/http";
 import type { Emote, EmoteMap } from "./types";
 
 const ACTIVE_ZERO_WIDTH = 1;
@@ -74,16 +73,10 @@ export function parseSeventvChannel(json: unknown): EmoteMap {
     return parseSeventvEmotes((json as SeventvUser | undefined)?.emote_set?.emotes, false);
 }
 
-export async function loadSeventvGlobal(fetchFn: FetchLike): Promise<EmoteMap> {
-    return parseSeventvGlobal(await requestJson(fetchFn, "https://7tv.io/v3/emote-sets/global", { timeoutMs: 30_000 }));
-}
+export const SEVENTV_GLOBAL_URL = "https://7tv.io/v3/emote-sets/global";
 
-export async function loadSeventvChannel(fetchFn: FetchLike, roomId: string): Promise<EmoteMap> {
-    try {
-        const json = await requestJson(fetchFn, `https://7tv.io/v3/users/twitch/${roomId}`, { timeoutMs: 30_000 });
-        return parseSeventvChannel(json);
-    } catch (error) {
-        if (error instanceof HttpError && error.status === 404) return new Map();
-        throw error;
-    }
+export const SEVENTV_TIMEOUT_MS = 30_000;
+
+export function seventvChannelUrl(roomId: string): string {
+    return `https://7tv.io/v3/users/twitch/${roomId}`;
 }

@@ -94,6 +94,7 @@
         "conformance:startup": "node scripts/startup-conformance.mjs",
         "conformance:local-storage": "node scripts/local-storage-conformance.mjs",
         "conformance:platform-services": "node scripts/platform-services-conformance.mjs",
+        "conformance:http-cache": "node scripts/http-cache-conformance.mjs",
         "conformance:animated-image": "node scripts/animated-image-conformance.mjs",
         "prepublishOnly": "npm run build",
         "release": "bun scripts/release.ts"

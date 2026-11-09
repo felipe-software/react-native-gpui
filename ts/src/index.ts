@@ -195,6 +195,7 @@ export { Animated, AnimatedValue, Easing } from "./Animated";
 export {
     AppCommands,
     Dock,
+    ImageCache,
     NativeClipboard,
     NativeLayout,
     NativeMenus,

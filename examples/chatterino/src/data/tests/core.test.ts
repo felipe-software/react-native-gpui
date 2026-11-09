@@ -6,6 +6,8 @@ import { memoryStorage, STORAGE_KEYS } from "../persistence";
 import type { PlatformHooks } from "../platform";
 import api from "./fixtures/api.json";
 import { LINES, RECORDED } from "./fixtures/lines";
+import { parseSeventvChannel } from "../emotes/seventv";
+import type { FetchLike } from "../util/http";
 import { FakeSocket, flushPromises, manualTimers, routedFetch, texts, type FetchRoute } from "./helpers";
 
 const VALIDATE: FetchRoute = (url, init) => {
@@ -204,6 +206,100 @@ describe("history", () => {
             ["9519740f-a5aa-47fa-ab0b-d58cde43983e", true],
         ]);
         expect(channel.snapshot().filter((message) => message.id === "b34ccfc7-4977-403a-8a94-33c6bac34fb8")).toHaveLength(1);
+        core.dispose();
+    });
+});
+
+const HISTORY_EMOTES =
+    "@historical=1;rm-received-ts=1794168000000;badges=;color=#FF0000;display-name=Hist;emotes=;id=hist-1;room-id=22484632;tmi-sent-ts=1794167999000;user-id=50;user-type= :hist!hist@hist.tmi.twitch.tv PRIVMSG #forsen :forsenBlunder GAMBA";
+
+type LooseElements = Array<{ kind: string; name?: string }>;
+
+function emoteNames(elements: LooseElements | undefined): string[] {
+    return (elements ?? []).filter((element) => element.kind === "emote").map((element) => element.name ?? "");
+}
+
+function historyMessage(events: ChannelEvent[]) {
+    for (const event of events) {
+        if (event.type !== "prepend") continue;
+        const message = event.messages.find((candidate) => candidate.id === "hist-1");
+        if (message) return message;
+    }
+    return undefined;
+}
+
+describe("emote sets and history", () => {
+    const gambaUrl = parseSeventvChannel(api.seventvChannel).get("GAMBA")?.url ?? "";
+
+    test("a warm start builds history with cached room ids and emote sets before the network answers", async () => {
+        const timers = manualTimers();
+        const storage = memoryStorage();
+        storage.setItem(STORAGE_KEYS.roomIds, JSON.stringify({ forsen: "22484632" }));
+        const bttv = "https://api.betterttv.net/3/cached/users/twitch/22484632";
+        const seventv = "https://7tv.io/v3/users/twitch/22484632";
+        const routed = routedFetch(routes([HISTORY_EMOTES]), new Map<string, unknown>([[bttv, api.bttvChannel], [seventv, api.seventvChannel]]));
+        const stalled = new Set([bttv, seventv, "https://api.frankerfacez.com/v1/room/id/22484632", "https://api.ivr.fi/v2/twitch/user?login=forsen"]);
+        const fetch: FetchLike = (url, init) => (init?.cache !== "only-if-cached" && stalled.has(url) ? new Promise(() => undefined) : routed(url, init));
+        const order: string[] = [];
+        const prefetched: string[] = [];
+        const core = createChatCore({
+            storage,
+            fetch,
+            timers,
+            socketFactory: (url) => new FakeSocket(url),
+            platform: {
+                prefetchImages: (urls) => {
+                    order.push("prefetch");
+                    prefetched.push(...urls);
+                },
+            },
+        });
+        const channel = core.join("forsen");
+        const events: ChannelEvent[] = [];
+        channel.subscribe((event) => {
+            order.push(event.type);
+            events.push(event);
+        });
+        await settle(timers);
+        expect(emoteNames(historyMessage(events)?.elements)).toEqual(["forsenBlunder", "GAMBA"]);
+        expect(order.indexOf("prefetch")).toBeGreaterThanOrEqual(0);
+        expect(order.indexOf("prefetch")).toBeLessThan(order.indexOf("prepend"));
+        expect(prefetched).toContain(gambaUrl);
+        core.dispose();
+    });
+
+    test("a cold start shows history at once and rebuilds it when a late emote set arrives", async () => {
+        const timers = manualTimers();
+        let release!: () => void;
+        const seventvGate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const routed = routedFetch(routes([HISTORY_EMOTES]));
+        const fetch: FetchLike = async (url, init) => {
+            if (init?.cache !== "only-if-cached" && url.startsWith("https://7tv.io/v3/users/twitch/")) await seventvGate;
+            return routed(url, init);
+        };
+        const prefetched: string[] = [];
+        const storage = memoryStorage();
+        const core = createChatCore({
+            storage,
+            fetch,
+            timers,
+            socketFactory: (url) => new FakeSocket(url),
+            platform: { prefetchImages: (urls) => prefetched.push(...urls) },
+        });
+        const channel = core.join("forsen");
+        const events: ChannelEvent[] = [];
+        channel.subscribe((event) => events.push(event));
+        await settle(timers);
+        expect(emoteNames(historyMessage(events)?.elements)).not.toContain("GAMBA");
+        expect(JSON.parse(storage.getItem(STORAGE_KEYS.roomIds) ?? "{}")).toEqual({ forsen: "22484632" });
+        release();
+        await settle(timers);
+        const patch = events.flatMap((event) => (event.type === "update" ? event.patches : [])).find((candidate) => candidate.id === "hist-1");
+        expect(emoteNames(patch?.elements as LooseElements | undefined)).toEqual(["forsenBlunder", "GAMBA"]);
+        expect(patch?.historical).toBe(true);
+        expect(prefetched).toContain(gambaUrl);
         core.dispose();
     });
 });

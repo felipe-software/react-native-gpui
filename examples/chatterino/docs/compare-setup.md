@@ -67,6 +67,11 @@ cp -a "$backup/." "$cfg/"
 This replaces your accounts and settings while it runs, which is why the isolated profile is
 preferred.
 
+## Timing emote loading
+
+`scripts/emote-timing.mjs` automates a timed comparison (cold and warm launches, both apps, same
+replayed history); see "Timing emotes against Chatterino" in the example README.
+
 ## Private display and capture
 
 Never start Chatterino on the user's desktop for automated captures. Use a private X server:

@@ -3,7 +3,7 @@
 // Components call `sendCommand`; the render layer wires the sink to the bridge.
 import type { ChatListMessage, ChatListMessagePatch, ChatListRevealAlign } from "./chat-list-types";
 import { platformRequest } from "./platform-services";
-import type { RendererProvenance, SerializedTerminalFrame } from "./runtime";
+import { sendHostCommand, type RendererProvenance, type SerializedTerminalFrame } from "./runtime";
 
 export type AppCommandBinding = {
     id: string;
@@ -87,6 +87,8 @@ export type Command =
     | { $cmd: "clipboardWrite"; text: string }
     | { $cmd: "performanceHud"; enabled: boolean }
     | { $cmd: "rendererProvenance"; requestId: number }
+    | { $cmd: "imagePrefetch"; urls: string[]; requestId: number }
+    | { $cmd: "httpPreconnect"; origins: string[] }
     | ({ $cmd: "appCommands" } & AppCommandConfig);
 
 let sink: ((cmd: Command) => void) | null = null;
@@ -236,6 +238,44 @@ export function resolveRendererProvenance(requestId: number, provenance: Rendere
     rendererProvenanceRequests.delete(requestId);
     clearTimeout(pending.timer);
     pending.resolve(provenance);
+}
+
+const IMAGE_PREFETCH_TIMEOUT_MS = 60_000;
+const imagePrefetchRequests = new Map<number, { resolve: (loaded: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
+let nextImagePrefetchRequestId = 1;
+
+function urlList(value: string | readonly string[]): string[] {
+    const list = typeof value === "string" ? [value] : [...value];
+    return [...new Set(list.filter((item) => typeof item === "string" && item.length > 0))];
+}
+
+export const ImageCache = {
+    prefetch(urls: string | readonly string[]): Promise<boolean> {
+        const list = urlList(urls);
+        if (list.length === 0) return Promise.resolve(true);
+        const requestId = nextImagePrefetchRequestId++;
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => {
+                imagePrefetchRequests.delete(requestId);
+                resolve(false);
+            }, IMAGE_PREFETCH_TIMEOUT_MS);
+            imagePrefetchRequests.set(requestId, { resolve, timer });
+            sendHostCommand({ $cmd: "imagePrefetch", urls: list, requestId });
+        });
+    },
+
+    preconnect(origins: string | readonly string[]): void {
+        const list = urlList(origins);
+        if (list.length > 0) sendHostCommand({ $cmd: "httpPreconnect", origins: list });
+    },
+};
+
+export function resolveImagePrefetch(requestId: number, loaded: boolean) {
+    const pending = imagePrefetchRequests.get(requestId);
+    if (!pending) return;
+    imagePrefetchRequests.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(loaded);
 }
 
 export const NativeMenus = {

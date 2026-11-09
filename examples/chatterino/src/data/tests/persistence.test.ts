@@ -5,6 +5,7 @@ import {
     loadLayout,
     loadSettings,
     memoryStorage,
+    roomIdCache,
     sanitizeLayout,
     sanitizeSettings,
     STORAGE_KEYS,
@@ -65,6 +66,7 @@ describe("storage", () => {
             settings: "chatterino-gpui/v1/settings",
             layout: "chatterino-gpui/v1/layout",
             accounts: "chatterino-gpui/v1/accounts",
+            roomIds: "chatterino-gpui/v1/room-ids",
         });
         const storage = memoryStorage();
         const store = createStore(loadSettings(storage), (value) => storage.setItem(STORAGE_KEYS.settings, JSON.stringify(value)));
@@ -154,5 +156,17 @@ describe("storage", () => {
             }),
         );
         expect(loadAccounts(storage)).toEqual({ accounts: [{ login: "me", userId: "1", clientId: "c", token: "abc", scopes: ["chat:read"] }] });
+    });
+
+    test("caches room ids per channel and ignores malformed ones", () => {
+        const storage = memoryStorage();
+        storage.setItem(STORAGE_KEYS.roomIds, JSON.stringify({ forsen: "22484632", broken: "abc", xqc: 71092938 }));
+        const ids = roomIdCache(storage);
+        expect(ids.get("forsen")).toBe("22484632");
+        expect(ids.get("broken")).toBeUndefined();
+        expect(ids.get("xqc")).toBeUndefined();
+        ids.set("xqc", "71092938");
+        expect(roomIdCache(storage).get("xqc")).toBe("71092938");
+        expect(JSON.parse(storage.getItem(STORAGE_KEYS.roomIds) ?? "{}")).toEqual({ forsen: "22484632", xqc: "71092938" });
     });
 });

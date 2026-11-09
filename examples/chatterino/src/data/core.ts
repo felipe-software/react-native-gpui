@@ -16,7 +16,7 @@ import type {
 } from "./api";
 import { accountFromCredentials, credentialErrors, fetchTokenScopes, validateToken } from "./accounts";
 import { DEFAULT_PING_SOUND } from "./assets";
-import { parseIvrBadges } from "./badges/twitch";
+import { parseIvrBadges, type BadgeMap } from "./badges/twitch";
 import { ChatChannel } from "./channel/chat-channel";
 import { MentionsChannel } from "./channel/mentions-channel";
 import { SplitChannelView, type BufferedChannel } from "./channel/split-view";
@@ -39,7 +39,7 @@ import type { GlobalContext } from "./messages/context";
 import type { ChatMessage } from "./messages/model";
 import type { RenderOptions } from "./messages/render";
 import { buildReceivedWhisper, buildSentWhisper, type WhisperDeps } from "./messages/whisper";
-import { loadAccounts, loadLayout, loadSettings, save, STORAGE_KEYS, type StorageLike } from "./persistence";
+import { loadAccounts, loadLayout, loadSettings, roomIdCache, save, STORAGE_KEYS, type StorageLike } from "./persistence";
 import type { PlatformHooks } from "./platform";
 import { createStore } from "./store";
 import { TwitchConnections } from "./twitch/connections";
@@ -57,6 +57,7 @@ export type ChatCoreOptions = {
     platform?: PlatformHooks;
     connect?: boolean;
     ircUrl?: string;
+    recentMessagesUrl?: string;
     loadGlobals?: boolean;
 };
 
@@ -76,6 +77,8 @@ export type ChatCoreExtras = {
     canSpawnProcesses(): boolean;
     canOpenCustomScheme(): boolean;
 };
+
+const EMOTE_IMAGE_ORIGINS = ["https://cdn.7tv.app", "https://cdn.betterttv.net", "https://cdn.frankerfacez.com", "https://static-cdn.jtvnw.net"];
 
 const RENDER_KEYS: Array<keyof Settings> = [
     "theme",
@@ -140,7 +143,7 @@ export function createChatCore(options: ChatCoreOptions = {}): ChatCore & ChatCo
     const timers = options.timers ?? defaultTimers();
     const platform = options.platform ?? {};
     const connect = options.connect !== false;
-    const globals = new GlobalResources(fetchFn);
+    const globals = new GlobalResources(fetchFn, () => registry.emotesChanged());
     let ignoreFilter: IgnoreFilter;
     let highlightChecker: HighlightChecker;
     let nicknameMatcher: NicknameMatcher = () => undefined;
@@ -354,10 +357,10 @@ export function createChatCore(options: ChatCoreOptions = {}): ChatCore & ChatCo
         return new Helix(fetchFn, account).cheermotes(roomId).then(parseHelixCheermotes);
     }
 
-    async function loadChannelBadges(login: string, roomId: string | undefined) {
+    function loadChannelBadges(_login: string, roomId: string | undefined): Promise<BadgeMap> | undefined {
         const account = currentAccount();
-        if (account && roomId) return parseIvrBadges(await new Helix(fetchFn, account).channelBadges(roomId));
-        return parseIvrBadges(await requestJson(fetchFn, `https://api.ivr.fi/v2/twitch/badges/channel?login=${encodeURIComponent(login)}`));
+        if (!account || !roomId) return undefined;
+        return new Helix(fetchFn, account).channelBadges(roomId).then(parseIvrBadges);
     }
 
     const registry = new ChannelRegistry({
@@ -377,15 +380,20 @@ export function createChatCore(options: ChatCoreOptions = {}): ChatCore & ChatCo
                 loadCheermotes,
                 loadBadges: loadChannelBadges,
                 twitchEmotes: () => globals.twitchEmotes,
+                onEmotesChanged: (channel) => registry.emotesChanged(channel),
             }),
         fetch: fetchFn,
         timers,
         settings: () => settings.get(),
         connections,
         mentions,
-        globalsReady: () => globals.ready(),
         onJoined: () => livePoller.poke(),
         loggedIn: () => !!currentAccount(),
+        globalsCached: () => globals.cached(),
+        globalsVersion: () => globals.version,
+        recentMessagesUrl: options.recentMessagesUrl,
+        roomIds: roomIdCache(storage),
+        prefetchImages: platform.prefetchImages,
     });
 
     const dispatcher = new IrcDispatcher({
@@ -699,6 +707,7 @@ export function createChatCore(options: ChatCoreOptions = {}): ChatCore & ChatCo
         whispers.dispose();
     }
 
+    if (connect) platform.preconnect?.(EMOTE_IMAGE_ORIGINS);
     const globalsReady = options.loadGlobals === false ? Promise.resolve() : globals.load();
     streamerWatcher.refresh(settings.get().streamerMode);
     streamerMode.subscribe(() => {

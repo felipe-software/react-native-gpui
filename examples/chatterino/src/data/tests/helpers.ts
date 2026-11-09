@@ -8,7 +8,7 @@ import { buildHighlightChecker } from "../filters/highlights";
 import { buildIgnoreFilter } from "../filters/ignores";
 import { defaultSettings } from "../defaults";
 import { parseIrcLine, type IrcMessage } from "../irc/message";
-import type { FetchLike, FetchResponse } from "../util/http";
+import type { FetchInit, FetchLike, FetchResponse } from "../util/http";
 import api from "./fixtures/api.json";
 
 export type ManualTimers = {
@@ -125,13 +125,16 @@ function response(status: number, body: string): FetchResponse {
 
 export const notFoundFetch: FetchLike = async () => response(404, "{}");
 
-export type FetchRoute = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) =>
-    | { status?: number; body: unknown }
-    | undefined;
+export type FetchRoute = (url: string, init?: FetchInit) => { status?: number; body: unknown } | undefined;
 
-export function routedFetch(routes: FetchRoute[]): FetchLike & { calls: string[] } {
+export function routedFetch(routes: FetchRoute[], cache: Map<string, unknown> = new Map()): FetchLike & { calls: string[] } {
     const calls: string[] = [];
-    const fn = (async (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    const fn = (async (url: string, init?: FetchInit) => {
+        if (init?.cache === "only-if-cached") {
+            if (!cache.has(url)) return response(504, "");
+            const cached = cache.get(url);
+            return response(200, typeof cached === "string" ? cached : JSON.stringify(cached));
+        }
         calls.push(`${init?.method ?? "GET"} ${url}`);
         for (const route of routes) {
             const result = route(url, init);

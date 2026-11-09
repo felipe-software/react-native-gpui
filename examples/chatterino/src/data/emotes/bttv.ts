@@ -1,4 +1,3 @@
-import { HttpError, requestJson, type FetchLike } from "../util/http";
 import type { Emote, EmoteMap } from "./types";
 
 const ZERO_WIDTH = new Set(["SoSnowy", "IceCold", "SantaHat", "TopHat", "ReinDeer", "CandyCane", "cvMask", "cvHazmat"]);
@@ -61,16 +60,8 @@ export function parseBttvChannel(json: unknown, channelDisplayName: string): Emo
     return map;
 }
 
-export async function loadBttvGlobal(fetchFn: FetchLike): Promise<EmoteMap> {
-    return parseBttvGlobal(await requestJson(fetchFn, "https://api.betterttv.net/3/cached/emotes/global"));
-}
+export const BTTV_GLOBAL_URL = "https://api.betterttv.net/3/cached/emotes/global";
 
-export async function loadBttvChannel(fetchFn: FetchLike, roomId: string, displayName: string): Promise<EmoteMap> {
-    try {
-        const json = await requestJson(fetchFn, `https://api.betterttv.net/3/cached/users/twitch/${roomId}`);
-        return parseBttvChannel(json, displayName);
-    } catch (error) {
-        if (error instanceof HttpError && error.status === 404) return new Map();
-        throw error;
-    }
+export function bttvChannelUrl(roomId: string): string {
+    return `https://api.betterttv.net/3/cached/users/twitch/${roomId}`;
 }

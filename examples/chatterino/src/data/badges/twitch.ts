@@ -1,4 +1,3 @@
-import { requestJson, type FetchLike } from "../util/http";
 import type { Badge } from "../emotes/types";
 
 type IvrBadgeVersion = {
@@ -41,13 +40,10 @@ export function parseIvrBadges(json: unknown): BadgeMap {
     return map;
 }
 
-export async function loadGlobalBadges(fetchFn: FetchLike): Promise<BadgeMap> {
-    return parseIvrBadges(await requestJson(fetchFn, "https://api.ivr.fi/v2/twitch/badges/global"));
-}
+export const IVR_GLOBAL_BADGES_URL = "https://api.ivr.fi/v2/twitch/badges/global";
 
-export async function loadChannelBadges(fetchFn: FetchLike, login: string): Promise<BadgeMap> {
-    const url = `https://api.ivr.fi/v2/twitch/badges/channel?login=${encodeURIComponent(login)}`;
-    return parseIvrBadges(await requestJson(fetchFn, url));
+export function ivrChannelBadgesUrl(login: string): string {
+    return `https://api.ivr.fi/v2/twitch/badges/channel?login=${encodeURIComponent(login)}`;
 }
 
 const GLOBAL_AUTHORITY = new Set(["staff", "admin", "global_mod"]);
