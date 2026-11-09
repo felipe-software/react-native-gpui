@@ -4680,6 +4680,11 @@ impl Window {
         self.platform_window.toggle_fullscreen();
     }
 
+    /// react-native-gpui patch: keep this window above others where the platform allows it.
+    pub fn set_keep_above(&self, keep_above: bool) {
+        self.platform_window.set_keep_above(keep_above);
+    }
+
     /// Updates the IME panel position suggestions for languages like japanese, chinese.
     pub fn invalidate_character_coordinates(&self) {
         self.on_next_frame(|window, cx| {

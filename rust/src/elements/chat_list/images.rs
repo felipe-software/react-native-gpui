@@ -75,7 +75,7 @@ struct Entry {
 thread_local! {
     static EPOCH: Instant = Instant::now();
     static IMAGES: RefCell<HashMap<SharedString, Entry>> = RefCell::new(HashMap::new());
-    static WAKE: Cell<Option<Instant>> = const { Cell::new(None) };
+    static WAKES: RefCell<HashMap<u64, Instant>> = RefCell::new(HashMap::new());
     static LAST_SWEEP: Cell<Option<Instant>> = const { Cell::new(None) };
     static WAKES_SCHEDULED: Cell<u64> = const { Cell::new(0) };
 }
@@ -185,27 +185,34 @@ fn slot_for(result: Result<Arc<RenderImage>, gpui::ImageCacheError>) -> Slot {
 }
 
 pub fn request_wake(deadline: Instant, window: &mut Window, cx: &mut App) {
-    if let Some(existing) = WAKE.get()
+    let key = window.window_handle().window_id().as_u64();
+    let scheduled = WAKES.with_borrow(|wakes| wakes.get(&key).copied());
+    if let Some(existing) = scheduled
         && existing <= deadline + WAKE_SLACK
     {
         return;
     }
-    WAKE.set(Some(deadline));
+    WAKES.with_borrow_mut(|wakes| wakes.insert(key, deadline));
     WAKES_SCHEDULED.set(WAKES_SCHEDULED.get() + 1);
     let delay = deadline.saturating_duration_since(Instant::now());
     window
         .spawn(cx, async move |cx| {
             cx.background_executor().timer(delay).await;
             let _ = cx.update(|window, _cx| {
-                if WAKE.get() != Some(deadline) {
+                let current = WAKES.with_borrow(|wakes| wakes.get(&key).copied());
+                if current != Some(deadline) {
                     return;
                 }
-                WAKE.set(None);
+                WAKES.with_borrow_mut(|wakes| wakes.remove(&key));
                 crate::anim_overlay::arm_paint_only_frame();
                 window.refresh();
             });
         })
         .detach();
+}
+
+pub fn forget_window(window: u64) {
+    WAKES.with_borrow_mut(|wakes| wakes.remove(&window));
 }
 
 pub fn wakes_scheduled() -> u64 {

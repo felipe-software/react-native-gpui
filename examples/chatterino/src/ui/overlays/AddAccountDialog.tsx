@@ -1,78 +1,50 @@
-import { useState } from "react";
-import { Text, View } from "react-native-gpui";
+import { useMemo, useState } from "react";
+import { View } from "react-native-gpui";
+import type { LoginCredentials } from "../../data/api";
 import { FloatingWindow } from "../common/FloatingWindow";
-import { PushButton } from "../common/PushButton";
-import { TextField } from "../common/TextField";
-import { useApp } from "../state/AppContext";
-import { chromeColors } from "../theme";
+import { SETTINGS_STYLE } from "../settings/settingsStyle";
+import { SPushButton } from "../settings/SPushButton";
+import { TabWidget } from "../settings/TabWidget";
+import { AppContext, useApp } from "../state/AppContext";
+import { themeFor } from "../theme";
+import { LoginAdvancedTab } from "./LoginAdvancedTab";
+import { LoginBasicTab } from "./LoginBasicTab";
+import { LoginErrorBox } from "./LoginErrorBox";
 
-type Status = { kind: "idle" } | { kind: "checking" } | { kind: "error"; message: string } | { kind: "added"; login: string };
-
-const STEPS = [
-    "1. Create a user access token for your own Twitch account with the chat:read and chat:edit scopes.",
-    "   Use Twitch's developer tools: register an application at dev.twitch.tv/console, or run the Twitch CLI:",
-    "   twitch token -u -s \"chat:read chat:edit\"",
-    "2. Paste the token below (the oauth: prefix is optional) and press Add user.",
-];
-
-const NOTE = "The token is checked with id.twitch.tv and stored only on this computer. Never paste a token someone else gave you.";
-
-function statusText(status: Status): string {
-    if (status.kind === "checking") return "Checking the token...";
-    if (status.kind === "error") return status.message;
-    if (status.kind === "added") return `Added ${status.login}.`;
-    return "";
-}
+const TABS = ["Basic", "Advanced"];
 
 export function AddAccountDialog({ onClose }: { onClose: () => void }) {
-    const { core, theme, fonts } = useApp();
-    const colors = chromeColors(theme);
-    const [token, setToken] = useState("");
-    const [status, setStatus] = useState<Status>({ kind: "idle" });
-    const text = { color: colors.text, fontFamily: fonts.appFamily, fontSize: fonts.appSize };
-    const muted = { ...text, color: colors.muted };
-    const checking = status.kind === "checking";
-    const canAdd = token.trim().length > 0 && !checking;
-    const message = statusText(status);
-    const messageColor = status.kind === "error" ? "#ff6b6b" : colors.muted;
+    const services = useApp();
+    const darkServices = useMemo(() => ({ ...services, theme: themeFor("dark") }), [services]);
+    const [tab, setTab] = useState(TABS[0]);
+    const [errors, setErrors] = useState<string[] | null>(null);
 
-    const add = () => {
-        if (!canAdd) return;
-        setStatus({ kind: "checking" });
-        core.addAccount(token).then(
-            (account) => {
-                setToken("");
-                setStatus({ kind: "added", login: account.login });
-            },
-            (error: unknown) => setStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }),
-        );
+    const submit = (credentials: LoginCredentials, closeOnSuccess: boolean) => {
+        const result = services.core.addAccountWithCredentials(credentials);
+        if (!result.ok) {
+            setErrors(result.errors);
+            return;
+        }
+        if (closeOnSuccess) onClose();
     };
 
     return (
-        <FloatingWindow testID="add-account-dialog" title="Add new account" width={520} height={300} modal onClose={onClose}>
-            <View style={{ flex: 1, padding: 11, gap: 8 }}>
-                <View style={{ gap: 2 }}>
-                    {STEPS.map((line) => (
-                        <Text key={line} style={text}>
-                            {line}
-                        </Text>
-                    ))}
+        <AppContext.Provider value={darkServices}>
+            <FloatingWindow testID="add-account-dialog" title="Add new account" width={365} height={367} modal onClose={onClose}>
+                <View style={{ flex: 1, backgroundColor: SETTINGS_STYLE.window, padding: 11, gap: 8 }}>
+                    <TabWidget testID="login-tabs" tabs={TABS} selected={tab} onSelect={setTab}>
+                        {tab === "Basic" ? (
+                            <LoginBasicTab onCredentials={(credentials) => submit(credentials, true)} />
+                        ) : (
+                            <LoginAdvancedTab onCredentials={(credentials) => submit(credentials, false)} />
+                        )}
+                    </TabWidget>
+                    <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+                        <SPushButton testID="account-dialog-close" label="Close" onPress={onClose} />
+                    </View>
+                    {errors ? <LoginErrorBox errors={errors} onClose={() => setErrors(null)} /> : null}
                 </View>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Text style={text}>OAuth token</Text>
-                    <TextField grow testID="account-token" value={token} placeholder="oauth:..." secure autoFocus onChange={setToken} onSubmit={add} />
-                </View>
-                <View style={{ flexDirection: "row", gap: 6 }}>
-                    <PushButton testID="account-add" label="Add user" primary disabled={!canAdd} onPress={add} />
-                    <PushButton testID="account-clear" label="Clear fields" onPress={() => setToken("")} />
-                </View>
-                {message ? <Text testID="account-status" style={{ ...text, color: messageColor }}>{message}</Text> : null}
-                <Text style={muted}>{NOTE}</Text>
-                <View style={{ flex: 1 }} />
-                <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
-                    <PushButton testID="account-dialog-close" label="Close" onPress={onClose} />
-                </View>
-            </View>
-        </FloatingWindow>
+            </FloatingWindow>
+        </AppContext.Provider>
     );
 }

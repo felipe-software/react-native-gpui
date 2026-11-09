@@ -1,63 +1,109 @@
-import { useMemo, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native-gpui";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { View, type MouseResponderEvent } from "react-native-gpui";
 import { FloatingWindow } from "../common/FloatingWindow";
-import { PushButton } from "../common/PushButton";
-import { TextField } from "../common/TextField";
+import { AboutPage } from "../settings/AboutPage";
 import { AccountsPage } from "../settings/AccountsPage";
+import { CommandsPage } from "../settings/CommandsPage";
+import { ExternalToolsPage } from "../settings/ExternalToolsPage";
+import { FiltersPage } from "../settings/FiltersPage";
 import { GeneralPage } from "../settings/GeneralPage";
 import { HighlightsPage } from "../settings/HighlightsPage";
 import { HotkeysPage } from "../settings/HotkeysPage";
 import { IgnoresPage } from "../settings/IgnoresPage";
+import { ModerationPage } from "../settings/ModerationPage";
+import { NicknamesPage } from "../settings/NicknamesPage";
 import { NotificationsPage } from "../settings/NotificationsPage";
+import { pageMatches } from "../settings/pageSearch";
+import { PluginsPage } from "../settings/PluginsPage";
+import { SettingsUiContext, type Point, type PopupSpec, type SettingsUi } from "../settings/SettingsContext";
+import { SettingsNavTab } from "../settings/SettingsNavTab";
+import { resolvePage, SETTINGS_PAGES, type SettingsPageName } from "../settings/settingsPages";
+import { SettingsPopupLayer } from "../settings/SettingsPopupLayer";
+import { SettingsSearchField } from "../settings/SettingsSearchField";
+import { SETTINGS_STYLE } from "../settings/settingsStyle";
+import { SPushButton } from "../settings/SPushButton";
 import { AppContext, useApp } from "../state/AppContext";
-import { SETTINGS_COLORS, themeFor } from "../theme";
+import { themeFor } from "../theme";
 
-const PAGES = ["General", "Accounts", "Highlights", "Ignores", "Hotkeys", "Live Notifications"] as const;
-type Page = (typeof PAGES)[number];
+const WIDTH = 915;
+const HEIGHT = 600;
+const TITLE_HEIGHT = 28;
+const GROUP_SPACING = 16;
 
-const GROUP_STARTS = new Set<Page>(["Accounts", "Highlights", "Hotkeys"]);
-
-const KEYWORDS: Record<Page, string> = {
-    General:
-        "interface theme font tab close live chat pause hover message length messages separate lines alternate background opacity history deleted timestamp format badges emotes animate size streamer mode load history scrollback limit",
-    Accounts: "accounts add remove oauth token login",
-    Highlights: "highlights phrases users mentions flash taskbar regex sound color your name",
-    Ignores: "ignores users phrases block replacement",
-    Hotkeys: "hotkeys keybindings shortcuts",
-    "Live Notifications": "live notifications notification",
-};
-
-function pageContent(page: Page) {
+function renderPage(page: SettingsPageName, initialTab: string | undefined) {
     switch (page) {
         case "General":
             return <GeneralPage />;
         case "Accounts":
             return <AccountsPage />;
+        case "Nicknames":
+            return <NicknamesPage />;
+        case "Commands":
+            return <CommandsPage />;
         case "Highlights":
             return <HighlightsPage />;
         case "Ignores":
             return <IgnoresPage />;
+        case "Filters":
+            return <FiltersPage />;
         case "Hotkeys":
             return <HotkeysPage />;
+        case "Moderation":
+            return <ModerationPage initialTab={initialTab} />;
         case "Live Notifications":
             return <NotificationsPage />;
+        case "External tools":
+            return <ExternalToolsPage />;
+        case "Plugins":
+            return <PluginsPage />;
+        case "About":
+            return <AboutPage />;
     }
 }
 
-function initialPage(page: string | undefined): Page {
-    return PAGES.find((entry) => entry === page) ?? "General";
+function spacingFor(index: number, visible: SettingsPageName[]): number {
+    const page = SETTINGS_PAGES.find((entry) => entry.name === visible[index]);
+    const previous = SETTINGS_PAGES.find((entry) => entry.name === visible[index - 1]);
+    if (!page || !previous || page.group === previous.group || page.group === 4) return 0;
+    return GROUP_SPACING;
 }
 
 export function SettingsDialog({ page, onClose }: { page?: string; onClose: () => void }) {
     const services = useApp();
-    const { core, prefsStore, fonts } = services;
-    const [current, setCurrent] = useState<Page>(initialPage(page));
-    const [query, setQuery] = useState("");
+    const { core, prefsStore } = services;
+    const [selected, setSelected] = useState<SettingsPageName>(resolvePage(page === "ModerationActions" ? "Moderation" : page));
+    const [query, setQuery] = useState(page === "StreamerMode" ? "Streamer Mode" : "");
+    const [popup, setPopup] = useState<PopupSpec | null>(null);
+    const [tooltip, setTooltip] = useState<{ text: string; at: Point } | null>(null);
+    const origin = useRef<Point>({ x: 0, y: 0 });
     const snapshot = useRef({ settings: core.settings.get(), prefs: prefsStore.get() });
     const darkServices = useMemo(() => ({ ...services, theme: themeFor("dark") }), [services]);
-    const needle = query.trim().toLowerCase();
-    const visiblePages = PAGES.filter((name) => !needle || `${name} ${KEYWORDS[name]}`.toLowerCase().includes(needle));
-    const shownPage = visiblePages.includes(current) ? current : (visiblePages[0] ?? current);
+    const settings = services.settings;
+    const moderationTab = page === "ModerationActions" ? "Moderation buttons" : undefined;
+
+    const visible = SETTINGS_PAGES.map((entry) => entry.name).filter((name) => pageMatches(name, query, settings));
+    const shown = visible.includes(selected) ? selected : (visible[0] ?? selected);
+    const topPages = visible.filter((name) => name !== "About");
+    const showAbout = visible.includes("About");
+
+    const trackOrigin = (event: MouseResponderEvent) => {
+        origin.current = { x: event.nativeEvent.pageX - event.nativeEvent.locationX, y: event.nativeEvent.pageY - event.nativeEvent.locationY };
+    };
+    const ui = useMemo<SettingsUi>(
+        () => ({
+            query,
+            toLocal: (point) => ({ x: point.x - origin.current.x, y: point.y - origin.current.y }),
+            showTooltip: (text, at) => setTooltip({ text, at }),
+            hideTooltip: () => setTooltip(null),
+            openPopup: (spec) => {
+                setTooltip(null);
+                setPopup(spec);
+            },
+            closePopup: () => setPopup(null),
+        }),
+        [query],
+    );
+    const closePopup = useCallback(() => setPopup(null), []);
 
     const cancel = () => {
         core.settings.set(snapshot.current.settings);
@@ -67,52 +113,47 @@ export function SettingsDialog({ page, onClose }: { page?: string; onClose: () =
 
     return (
         <AppContext.Provider value={darkServices}>
-            <FloatingWindow testID="settings-dialog" title="Chatterino Settings" width={915} height={600} onClose={onClose}>
-                <View style={{ flex: 1, backgroundColor: SETTINGS_COLORS.background, padding: 11 }}>
-                    <TextField testID="settings-search" value={query} placeholder="Find in settings... (Ctrl+F)" onChange={setQuery} />
-                    <View style={{ flex: 1, flexDirection: "row", marginTop: 12 }}>
-                        <View style={{ width: 150, paddingVertical: 20 }}>
-                            {visiblePages.map((name) => {
-                                const selected = name === shownPage;
-                                const gap = GROUP_STARTS.has(name) && !needle ? 16 : 0;
-                                return (
-                                    <View
-                                        key={name}
-                                        testID={`settings-page-${name}`}
-                                        accessibilityRole="tab"
-                                        accessibilityState={{ selected }}
-                                        style={{
-                                            height: 30,
-                                            marginTop: gap,
-                                            justifyContent: "center",
-                                            paddingLeft: 35,
-                                            backgroundColor: selected ? SETTINGS_COLORS.navSelected : undefined,
-                                        }}
-                                        onClick={() => setCurrent(name)}
-                                    >
-                                        <Text
-                                            style={{
-                                                color: selected ? SETTINGS_COLORS.navSelectedText : SETTINGS_COLORS.navText,
-                                                fontFamily: fonts.appFamily,
-                                                fontSize: 14,
-                                            }}
-                                        >
-                                            {name}
-                                        </Text>
-                                    </View>
-                                );
-                            })}
+            <SettingsUiContext.Provider value={ui}>
+                <FloatingWindow testID="settings-dialog" title="Chatterino Settings" width={WIDTH} height={HEIGHT + TITLE_HEIGHT} onClose={onClose}>
+                    <View
+                        testID="settings-root"
+                        style={{ flex: 1, backgroundColor: SETTINGS_STYLE.window, padding: 11 }}
+                        onMouseDown={trackOrigin}
+                        onMouseMove={trackOrigin}
+                    >
+                        <SettingsSearchField value={query} onChange={setQuery} />
+                        <View style={{ flex: 1, flexDirection: "row", marginTop: 12 }}>
+                            <View style={{ width: 150, paddingTop: 20, paddingBottom: 20 }}>
+                                {topPages.map((name, index) => {
+                                    const entry = SETTINGS_PAGES.find((candidate) => candidate.name === name);
+                                    return (
+                                        <SettingsNavTab
+                                            key={name}
+                                            name={name}
+                                            icon={entry?.icon ?? "settings/about.svg"}
+                                            selected={name === shown}
+                                            marginTop={spacingFor(index, topPages)}
+                                            onSelect={() => setSelected(name)}
+                                        />
+                                    );
+                                })}
+                                <View style={{ flex: 1 }} />
+                                {showAbout ? (
+                                    <SettingsNavTab name="About" icon="settings/about.svg" selected={shown === "About"} marginTop={0} onSelect={() => setSelected("About")} />
+                                ) : null}
+                            </View>
+                            <View testID="settings-content" style={{ flex: 1 }}>
+                                {renderPage(shown, moderationTab)}
+                            </View>
                         </View>
-                        <ScrollView testID="settings-content" style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16 }}>
-                            {pageContent(shownPage)}
-                        </ScrollView>
+                        <View style={{ height: 35, flexDirection: "row", justifyContent: "flex-end", alignItems: "flex-end", gap: 8 }}>
+                            <SPushButton testID="settings-cancel" label="Cancel" onPress={cancel} />
+                            <SPushButton testID="settings-ok" label="Ok" onPress={onClose} />
+                        </View>
+                        <SettingsPopupLayer width={WIDTH - 2} height={HEIGHT} popup={popup} tooltip={tooltip} onClose={closePopup} />
                     </View>
-                    <View style={{ height: 37, flexDirection: "row", justifyContent: "flex-end", alignItems: "flex-end", gap: 6 }}>
-                        <PushButton testID="settings-cancel" label="Cancel" onPress={cancel} />
-                        <PushButton testID="settings-ok" label="Ok" primary onPress={onClose} />
-                    </View>
-                </View>
-            </FloatingWindow>
+                </FloatingWindow>
+            </SettingsUiContext.Provider>
         </AppContext.Provider>
     );
 }

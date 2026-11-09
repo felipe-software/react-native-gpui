@@ -19,6 +19,8 @@ export type ChannelRegistryDeps = {
     connections: TwitchConnections;
     mentions: MentionsChannel;
     globalsReady: () => Promise<void>;
+    onJoined?: (channel: ChatChannel) => void;
+    loggedIn?: () => boolean;
 };
 
 export class ChannelRegistry {
@@ -71,6 +73,7 @@ export class ChannelRegistry {
 
     applyRoomId(channel: ChatChannel, roomId: string): void {
         void channel.emoteSets.loadForRoom(roomId, channel.displayName());
+        if (this.deps.loggedIn?.()) void channel.emoteSets.loadBadges(channel.name, roomId);
     }
 
     dispose(): void {
@@ -90,6 +93,7 @@ export class ChannelRegistry {
         void channel.emoteSets.loadBadges(channel.name);
         void this.lookup(channel);
         void this.loadHistory(channel);
+        this.deps.onJoined?.(channel);
     }
 
     private async lookup(channel: ChatChannel): Promise<void> {

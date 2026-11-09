@@ -193,7 +193,15 @@ pub fn debug_tap(list_id: u64, x: f32, y: f32, button: MouseButton) -> Option<Va
         let position = point(px(x), px(y));
         let target = list.hit_target(position);
         let seq = list.row_at(y).map(|row| row.seq);
-        events::emit_press(list_id, list, button, position, target.as_ref(), seq)
+        events::emit_press(
+            list_id,
+            list,
+            button,
+            position,
+            target.as_ref(),
+            seq,
+            gpui::Modifiers::default(),
+        )
     })
     .flatten()
 }

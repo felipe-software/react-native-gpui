@@ -1,7 +1,9 @@
+import type { Settings } from "../api";
 import type { CheermoteSet } from "../emotes/cheermotes";
 import type { Badge, Emote } from "../emotes/types";
 import type { HighlightChecker } from "../filters/highlights";
 import type { IgnoreFilter } from "../filters/ignores";
+import type { NicknameMatcher } from "../filters/nicknames";
 import type { ChatMessage } from "./model";
 
 export type ChannelContext = {
@@ -18,6 +20,9 @@ export type ChannelContext = {
     findMessage(id: string): ChatMessage | undefined;
     isThreadSubscribed(rootId: string): boolean;
     subscribeThread(rootId: string): void;
+    isKnownChatter?(login: string): boolean;
+    isModerator?(): boolean;
+    isBroadcaster?(): boolean;
 };
 
 export type GlobalContext = {
@@ -25,4 +30,6 @@ export type GlobalContext = {
     ignores: IgnoreFilter;
     highlights: HighlightChecker;
     now(): number;
+    settings?: Settings;
+    nickname?: NicknameMatcher;
 };

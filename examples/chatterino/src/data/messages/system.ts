@@ -117,14 +117,14 @@ export function makeClearChatMessage(channel: string, time: number, count = 1): 
 
 const DELETED_MESSAGE_LENGTH_LIMIT = 50;
 
-function truncateDeleted(text: string): string {
+function truncateDeleted(text: string, limit: number): string {
     const chars = Array.from(text);
-    if (chars.length <= DELETED_MESSAGE_LENGTH_LIMIT) return text;
-    return `${chars.slice(0, DELETED_MESSAGE_LENGTH_LIMIT).join("")}…`;
+    if (limit <= 0 || chars.length <= limit) return text;
+    return `${chars.slice(0, limit).join("")}…`;
 }
 
-export function makeDeletionMessage(channel: string, original: ChatMessage, time: number): ChatMessage {
-    const deletedText = truncateDeleted(original.text);
+export function makeDeletionMessage(channel: string, original: ChatMessage, time: number, limit = DELETED_MESSAGE_LENGTH_LIMIT): ChatMessage {
+    const deletedText = truncateDeleted(original.text, limit);
     const builder = new PieceBuilder();
     builder.text("A message from", "system");
     builder.user(original.displayName || original.login, original.login, "system", true);
@@ -173,16 +173,17 @@ export function makeLoginExpiredMessage(channel: string, login: string): ChatMes
     });
 }
 
-export function makeLiveMessage(channel: string, displayName: string, time: number = Date.now()): ChatMessage {
+export function makeLiveMessage(channel: string, displayName: string, time: number = Date.now(), title?: string): ChatMessage {
     const builder = new PieceBuilder();
     builder.user(displayName, channel, "text", true);
-    builder.text("is live!", "text");
+    const suffix = title ? `is live: ${title}` : "is live!";
+    builder.text(suffix, "text");
     return createMessage({
         channel,
         time,
         pieces: builder.pieces,
         flags: { system: true, doNotNotify: true },
-        text: `${displayName} is live!`,
+        text: `${displayName} ${suffix}`,
     });
 }
 

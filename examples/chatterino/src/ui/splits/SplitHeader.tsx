@@ -1,106 +1,101 @@
 import { useRef } from "react";
 import { Text, View, type MouseResponderEvent } from "react-native-gpui";
-import type { ChannelInfo, SplitLeaf } from "../../data/api";
+import type { Channel, ChannelInfo, SplitLeaf } from "../../data/api";
+import { themedAsset } from "../assetPaths";
+import { IconButton } from "../common/IconButton";
 import { KebabButton } from "../common/KebabButton";
 import { PlusButton } from "../common/PlusButton";
-import { headerTitle, liveTooltip, roomModesText } from "../format";
+import { headerTitle, roomModesText } from "../format";
 import type { Rect } from "../layout/geometry";
 import { useApp } from "../state/AppContext";
-import { resolveDropTarget } from "../state/dragDrop";
-import { hitAreas } from "../state/hitAreas";
-import { MENTIONS_CHANNEL } from "../state/ids";
+import { isSpecialChannel } from "../state/specialChannels";
+import { useModRights } from "../state/useChannelRights";
+import { useStore } from "../state/useStore";
+import { headerTooltipBlocks } from "./headerTooltip";
+import { ModesLabel } from "./ModesLabel";
 import { splitMenuEntries } from "./splitMenu";
+import { useSplitDrag } from "./useSplitDrag";
 
 type Props = {
     split: SplitLeaf;
     tabId: string;
+    channel: Channel | undefined;
     info: ChannelInfo | undefined;
     focused: boolean;
     isTopRight: boolean;
     rect: Rect;
+    detached?: boolean;
     onClear: () => void;
+    onClosePopup?: () => void;
 };
 
 const HEIGHT = 28;
 const ADD_WIDTH = 16;
-const KEBAB_WIDTH = 28;
+const BUTTON_WIDTH = 28;
 const DRAG_DISTANCE = 15;
 const DOUBLE_CLICK_MS = 400;
 
-type Press = { x: number; y: number; dragging: boolean };
-
-export function SplitHeader({ split, tabId, info, focused, isTopRight, rect, onClear }: Props) {
+export function SplitHeader({ split, tabId, channel, info, focused, isTopRight, rect, detached, onClear, onClosePopup }: Props) {
     const services = useApp();
-    const { theme, fonts, actions } = services;
-    const press = useRef<Press | null>(null);
+    const { theme, fonts, actions, settings, core } = services;
+    const accounts = useStore(core.accounts);
     const lastDown = useRef(0);
     const tooltipOwner = `header:${split.id}`;
+    const drag = useSplitDrag(split.id, tabId, DRAG_DISTANCE);
+    const isSpecial = isSpecialChannel(split.channel);
+    const hasModRights = useModRights(isSpecial ? undefined : channel, accounts.current);
+    const moderationMode = !!split.moderationMode;
+    const showModeration = hasModRights || moderationMode;
     const background = focused ? theme.header.focusedBackground : theme.header.background;
     const border = focused ? theme.header.focusedBorder : theme.header.border;
     const textColor = focused ? theme.header.focusedText : theme.header.text;
-    const isMentions = split.channel === MENTIONS_CHANNEL;
-    const title = isMentions ? "/mentions" : headerTitle(split.channel, info);
-    const modes = info ? roomModesText(info.modes) : "";
+    const titleOptions = {
+        uptime: !!settings.headerUptime,
+        viewers: !!settings.headerViewerCount,
+        game: !!settings.headerGame,
+        title: !!settings.headerStreamTitle,
+        filtered: (split.filters?.length ?? 0) > 0,
+    };
+    const title = isSpecial ? split.channel : headerTitle(split.channel, info, titleOptions);
+    const modes = info ? roomModesText(info.modes, hasModRights) : "";
+    const buttonsWidth = (showModeration ? BUTTON_WIDTH : 0) + BUTTON_WIDTH + (isTopRight ? ADD_WIDTH : 0);
     const borderWidth = isTopRight ? rect.width - ADD_WIDTH : rect.width;
 
     const openMenu = (x: number, y: number, alignRight = false) =>
-        services.openOverlay({ kind: "menu", x, y, alignRight, entries: splitMenuEntries(services, split, onClear) });
+        services.openOverlay({ kind: "menu", x, y, alignRight, entries: splitMenuEntries(services, split, onClear, { detached, hasModRights, onClosePopup }) });
 
     const showTooltip = () => {
-        const tooltip = liveTooltip(info?.live, Date.now());
-        if (!tooltip) return;
-        const lines = [tooltip.title, tooltip.game, tooltip.status].filter((line): line is string => !!line);
-        services.showTooltip({ owner: tooltipOwner, text: lines.join("\n"), anchor: rect, placement: "below" });
+        if (isSpecial || !split.channel) return;
+        const thumbnailSize = settings.thumbnailSizeStream ?? 2;
+        const blocks = headerTooltipBlocks(info?.live, split.channel, thumbnailSize, Date.now());
+        if (!blocks) return;
+        services.showTooltip({ owner: tooltipOwner, text: "", blocks, anchor: rect, placement: "below" });
+    };
+
+    const toggleModeration = () => {
+        services.hideTooltip(tooltipOwner);
+        const noActions = (settings.moderationActions ?? []).length === 0;
+        if (noActions) {
+            services.openOverlay({ kind: "settings", page: "Moderation" });
+            actions.setModerationMode(split.id, true);
+            return;
+        }
+        actions.setModerationMode(split.id, !moderationMode);
     };
 
     const handleDown = (event: MouseResponderEvent) => {
-        const buttonsWidth = isTopRight ? KEBAB_WIDTH + ADD_WIDTH : KEBAB_WIDTH;
         const onButton = event.nativeEvent.locationX >= rect.width - buttonsWidth;
         services.hideTooltip(tooltipOwner);
-        if (event.nativeEvent.pressDrag || onButton) return;
-        const { pageX, pageY } = event.nativeEvent;
+        if (event.nativeEvent.pressDrag || onButton || detached) return;
         const now = Date.now();
         const isDoubleClick = now - lastDown.current < DOUBLE_CLICK_MS;
         lastDown.current = now;
         if (isDoubleClick) {
-            press.current = null;
+            drag.cancel();
             services.openOverlay({ kind: "selectChannel", splitId: split.id, isNew: false });
             return;
         }
-        press.current = { x: pageX, y: pageY, dragging: false };
-    };
-
-    const handleMove = (event: MouseResponderEvent) => {
-        const current = press.current;
-        if (!current) return;
-        const { pageX, pageY } = event.nativeEvent;
-        if (!current.dragging) {
-            const distance = Math.hypot(pageX - current.x, pageY - current.y);
-            if (distance <= DRAG_DISTANCE) return;
-            current.dragging = true;
-            services.hideTooltip(tooltipOwner);
-            services.hideTooltip(`chat:${split.id}`);
-        }
-        services.drag.set({ splitId: split.id, sourceTabId: tabId, x: pageX, y: pageY });
-        const hoveredTab = hitAreas.tabAt(pageX, pageY);
-        if (hoveredTab) actions.peekTab(hoveredTab);
-    };
-
-    const handleUp = (event: MouseResponderEvent) => {
-        if (event.nativeEvent.pressDrag) return;
-        const current = press.current;
-        press.current = null;
-        if (!current) return;
-        const { pageX, pageY } = event.nativeEvent;
-        const movedFar = Math.hypot(pageX - current.x, pageY - current.y) > DRAG_DISTANCE;
-        const wasDrag = current.dragging || movedFar;
-        if (!wasDrag) return;
-        const hoveredTab = hitAreas.tabAt(pageX, pageY);
-        if (hoveredTab) actions.peekTab(hoveredTab);
-        const target = resolveDropTarget(services.core.layout.get().selectedTabId, pageX, pageY);
-        services.drag.set(null);
-        if (target) actions.dropSplit(split.id, target);
-        else actions.focusSplit(split.id);
+        drag.begin(event);
     };
 
     return (
@@ -111,8 +106,8 @@ export function SplitHeader({ split, tabId, info, focused, isTopRight, rect, onC
             nativeListGroup={`drag-${split.id}`}
             style={{ height: HEIGHT, backgroundColor: background, flexDirection: "row", alignItems: "center", cursor: "default" }}
             onMouseDown={handleDown}
-            onMouseMove={handleMove}
-            onMouseUp={handleUp}
+            onMouseMove={drag.move}
+            onMouseUp={drag.end}
             onMouseEnter={showTooltip}
             onMouseLeave={() => services.hideTooltip(tooltipOwner)}
             onContextMenu={(event) => openMenu(event.nativeEvent.pageX, event.nativeEvent.pageY)}
@@ -135,10 +130,23 @@ export function SplitHeader({ split, tabId, info, focused, isTopRight, rect, onC
                 </Text>
             </View>
             <View style={{ width: 8 }} />
-            {modes ? (
-                <View testID={`split-modes-${split.id}`} style={{ paddingHorizontal: 6, justifyContent: "center" }}>
-                    <Text style={{ marginTop: 4, color: theme.window.text, fontFamily: fonts.appFamily, fontSize: fonts.appSize, textAlign: "center" }}>{modes}</Text>
-                </View>
+            {modes ? <ModesLabel splitId={split.id} text={modes} /> : null}
+            {showModeration ? (
+                <IconButton
+                    testID={`split-moderation-${split.id}`}
+                    label={moderationMode ? "Disable moderation mode" : "Enable moderation mode"}
+                    icon={
+                        moderationMode
+                            ? themedAsset(theme.isLight, "moderationEnabled-darkMode.svg", "moderationEnabled-lightMode.svg")
+                            : themedAsset(theme.isLight, "moderationDisabled-darkMode.svg", "moderationDisabled-lightMode.svg")
+                    }
+                    width={BUTTON_WIDTH}
+                    height={HEIGHT}
+                    iconWidth={18}
+                    iconHeight={18}
+                    onPress={toggleModeration}
+                    onContextMenu={() => services.openOverlay({ kind: "settings", page: "Moderation" })}
+                />
             ) : null}
             <KebabButton
                 testID={`split-menu-${split.id}`}

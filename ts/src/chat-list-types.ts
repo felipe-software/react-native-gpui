@@ -68,6 +68,10 @@ export type ChatListPressEvent = {
     button: "left" | "right" | "middle";
     x: number;
     y: number;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    altKey: boolean;
+    metaKey: boolean;
     login?: string;
     url?: string;
     name?: string;
@@ -89,6 +93,8 @@ export type ChatListHoverEvent = {
     y: number;
     width: number;
     height: number;
+    pointerX: number;
+    pointerY: number;
 };
 
 export type ChatListScrollState = {
@@ -119,10 +125,16 @@ export type ChatListProps = ViewProps & {
     onScrollState?: (event: { nativeEvent: ChatListScrollState }) => void;
 };
 
+export type ChatListRevealAlign = "top" | "center" | "bottom";
+
 export interface ChatListHandle {
     append(messages: ChatListMessage[]): void;
     prepend(messages: ChatListMessage[]): void;
     update(patches: ChatListMessagePatch[]): void;
     clear(): void;
     scrollToBottom(): void;
+    scrollToTop(): void;
+    scrollToMessage(messageId: string, options?: { align?: ChatListRevealAlign }): void;
+    pageUp(): void;
+    pageDown(): void;
 }

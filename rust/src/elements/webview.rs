@@ -173,6 +173,51 @@ pub struct WebViewContent {
     pub is_html: bool,
 }
 
+thread_local! {
+    static OWNER_WEBVIEWS: RefCell<HashMap<u64, (HashMap<u64, Rc<NativeWebView>>, HashMap<u64, WebViewContent>)>> =
+        RefCell::new(HashMap::new());
+}
+
+pub fn set_webviews_for(
+    owner: u64,
+    map: HashMap<u64, Rc<NativeWebView>>,
+    content: HashMap<u64, WebViewContent>,
+) {
+    let has_other_owners = OWNER_WEBVIEWS.with_borrow_mut(|owners| {
+        owners.insert(owner, (map.clone(), content.clone()));
+        owners.len() > 1
+    });
+    if !has_other_owners {
+        set_webviews(map, content);
+        return;
+    }
+    let (all_views, all_content) = union_of_owners();
+    set_webviews(all_views, all_content);
+}
+
+pub fn forget_owner(owner: u64) {
+    let removed = OWNER_WEBVIEWS.with_borrow_mut(|owners| owners.remove(&owner).is_some());
+    if removed {
+        let (all_views, all_content) = union_of_owners();
+        set_webviews(all_views, all_content);
+    }
+}
+
+fn union_of_owners() -> (
+    HashMap<u64, Rc<NativeWebView>>,
+    HashMap<u64, WebViewContent>,
+) {
+    OWNER_WEBVIEWS.with_borrow(|owners| {
+        let mut all_views = HashMap::new();
+        let mut all_content = HashMap::new();
+        for (views, content) in owners.values() {
+            all_views.extend(views.iter().map(|(id, view)| (*id, view.clone())));
+            all_content.extend(content.iter().map(|(id, body)| (*id, body.clone())));
+        }
+        (all_views, all_content)
+    })
+}
+
 pub fn set_webviews(map: HashMap<u64, Rc<NativeWebView>>, content: HashMap<u64, WebViewContent>) {
     let live_ids: std::collections::HashSet<u64> = map.keys().copied().collect();
     WEBVIEWS.with(|w| *w.borrow_mut() = map);

@@ -46,7 +46,19 @@ fn dispatch(op: &str, args: Value) -> Result<Value, String> {
         "sound.play" => crate::sound::play(args).map(|()| Value::Null),
         "processes.findRunning" => crate::processes::find_running(args).map(|names| json!(names)),
         "storage.flush" => crate::storage::flush().map(|()| Value::Null),
+        "clipboard.read" => read_clipboard(),
         other => Err(format!("unknown platform call {other}")),
+    }
+}
+
+fn read_clipboard() -> Result<Value, String> {
+    let (reply, answer) = flume::bounded(1);
+    if !crate::send_incoming(crate::Incoming::ClipboardRead { reply }) {
+        return Err("the service is shutting down".into());
+    }
+    match answer.recv_timeout(Duration::from_secs(5)) {
+        Ok(text) => Ok(Value::String(text.unwrap_or_default())),
+        Err(_) => Err("timed out reading the clipboard".into()),
     }
 }
 

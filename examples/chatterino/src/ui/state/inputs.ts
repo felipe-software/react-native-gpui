@@ -1,9 +1,12 @@
-export type InputCommand = "complete" | "completeBack" | "previous" | "next" | "sendKeep" | "escape";
+import type { ReplyTarget } from "../splits/replyTarget";
+
+export type InputCommand = "complete" | "completeBack" | "previous" | "next" | "newline" | "sendKeep" | "escape";
 
 export type InputController = {
     focus(): void;
     insert(text: string): void;
     mention(name: string, asReply: boolean): void;
+    reply(target: ReplyTarget): void;
     command(command: InputCommand): boolean;
     scrollToBottom(): void;
 };

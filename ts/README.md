@@ -58,7 +58,7 @@ re-renders.
 | --- | --- | --- | --- |
 | `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` `ChatList` | `Image` `Svg` `WebView` |
 
-APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `fetch`, `crypto`).
+APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `NativeClipboard`, `fetch`, `crypto`).
 
 - **Real text input** (`TextInput`) is backed by [gpui-component](https://github.com/longbridge/gpui-component)'s editor: selection, IME, copy/paste, word motion, multiline. Resolved `style.color` and `placeholderTextColor` paint through the native editor. `onChange.nativeEvent` includes `isComposing` and `eventCount`, so controlled inputs can preserve native marked text while React commits catch up.
 - **Text truncation** follows React Native's `numberOfLines`: one-line labels truncate with ellipsis, and multi-line labels are line-clamped.
@@ -68,6 +68,89 @@ APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio
 - **Native layout overrides** (`nativeLayoutKey`, `nativeResize`, `NativeLayout`) let narrow chrome interactions such as pane resizing mutate GPUI layout in the native service without a React commit per pointer frame.
 - **Styling** matches RN: flexbox (Yoga semantics — `flex:1`, `%`, `auto`), `backgroundColor`, gradients via `backgroundImage`, `boxShadow` / iOS `shadow*` / `elevation`, `borderRadius`, `overflow: scroll`, `opacity`.
 - **`Svg`** renders a monochrome icon tinted by `style.color`.
+- **Keyboard**: the first `onKeyPress` listener of a window (outside text inputs) receives
+  every key typed in that window, and Ctrl, Shift, Alt or Meta pressed on its own arrives
+  as `Control`, `Shift`, `Alt` or `Meta`. `onKeyUp` reports releases the same way.
+- **Middle click**: `onAuxClick` fires when the middle button is pressed and released on
+  the same view (`nativeEvent.button` is 1).
+- **Press-drag scrubbing**: a press on a view with `onMouseUp`/`onClick`/`onPress` that
+  drags across another such view presses it (menus, list rows), scoped by
+  `nativeListGroup`. `nativePressDrag={false}` takes a view and its descendants out of it,
+  for drag handles whose child buttons must not fire when the drag crosses them.
+- **Colors**: every CSS named color and `transparent` (for `color`, `backgroundColor` and
+  `borderColor`).
+
+## Windows
+
+`<Window>` opens a real OS window that this app's React tree renders into. The window is
+another GPUI window inside the same service, drawn from the same JavaScript runtime and
+reconciler, so its children share every context, store and piece of state with the rest
+of the app, and live data (a chat feed, a socket) updates both windows at once.
+Mounting opens the window; unmounting closes it.
+
+```tsx
+import { useState } from "react";
+import { Window, Text, TextInput, View } from "react-native-gpui";
+
+function UserCardHost({ user }: { user: User }) {
+  const [pinned, setPinned] = useState(false);
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <Window
+      kind="popup"
+      title={`${user.name}'s Usercard`}
+      width={420}
+      height={470}
+      position={{ x: -140, y: -94, relativeTo: "cursor" }}
+      closeOnBlur={!pinned}
+      onClose={({ reason }) => setOpen(false)}
+    >
+      <UserCard user={user} pinned={pinned} onPin={setPinned} />
+    </Window>
+  );
+}
+```
+
+| Prop | Meaning |
+| --- | --- |
+| `title`, `width`, `height` | Window title and content size (the platform frame, or the Linux client-side frame, comes on top). |
+| `minWidth`, `minHeight` | Minimum content size. |
+| `kind` | `"normal"` (default), `"dialog"` (transient for the main window, closes on Escape) or `"popup"` (frameless, closes on Escape and when it loses focus). |
+| `position` | `"center"` on the main window (default for normal and dialog windows), `"cursor"` (default for popups), or `{ x, y, relativeTo }` for the content's top-left corner relative to the main window's content (`"parent"`, default), the screen, or the cursor. Windows are kept on the display; a cursor-placed window that would run off the bottom-right corner opens above the cursor. |
+| `resizable`, `alwaysOnTop` | Default resizable except popups. `alwaysOnTop` keeps the window above others on macOS and X11. |
+| `closeOnBlur`, `closeOnEscape` | Override the kind's defaults. |
+| `onClose({ reason })` | The window asked to close: `"system"` (the OS or title-bar close button), `"escape"`, `"blur"` or `"error"` (it could not be created). Unmount the `<Window>` to close it; without `onClose` it closes itself. |
+| `onFocus`, `onBlur`, `onResize({ width, height })` | Activation and size changes. |
+| `testID` | Names the window for `rngpui --window`. |
+
+Inside a window, `useWindowDimensions()` returns that window's size and
+`useWindowFocused()` whether it has focus. A ref (`WindowHandle`) has `windowId` and
+`focus()`.
+
+- Each window has its own hit testing, focus, keyboard shortcuts (`AppCommands` bindings
+  fire in whichever window has focus), text inputs, `ChatList`s, theme, layout and frame
+  pacing: a window repaints only when its own tree, input or animation changes, and the
+  main window keeps its retained-layout fast path while secondary windows lay out in full.
+- Wayland does not let a client place its toplevel windows, so `position` is ignored
+  there and the compositor places the window. X11 and macOS honor it. `alwaysOnTop` has
+  no Wayland protocol either.
+- On GNOME (no server-side decorations) normal windows and dialogs get the client-side
+  title bar, border and resize edges, and its close button reports `reason: "system"`.
+  KWin draws server-side decorations. Popups are frameless everywhere.
+- Closing the main window quits the app and closes every other window.
+- `NativeWindow.open()` still starts a separate process with its own JavaScript state; use
+  `<Window>` for windows that belong to the running app.
+
+`AppState.currentState` is `"active"` while one of the app's windows has focus and
+`"inactive"` otherwise; `AppState.addEventListener("change" | "focus" | "blur", …)` and
+`useAppState()` follow it. `AppState.addEventListener("windowFocus", ({ windowId, focused }))`
+reports each window, the main window as id 0.
+
+`bun run conformance:multi-window` opens a dialog, a window with a `ChatList` and a popup
+in one service and checks per-window trees, pixels, real clicks and keys, shared state,
+Escape / title-bar / focus-loss / unmount closing, and that closing leaks no nodes or
+native state.
 
 ## Native surfaces
 
@@ -132,6 +215,16 @@ rngpui dev \
 
 There is one development reload contract. RNGPUI does not fall back to process
 signals or remount the application when a Fast Refresh update fails.
+
+`rngpui get windows` lists the windows a service shows (id, kind, title, `testID`,
+bounds, nodes, frames painted). `--window <id | main | testID | kind | title>` aims
+`get`, `do`, `trace` and `reshot` at one of them:
+
+```sh
+rngpui get windows --session /tmp/rngpui-cli-abc123
+rngpui do tap dialog-increment --window fixture-dialog --session /tmp/rngpui-cli-abc123
+rngpui reshot --window popup --session /tmp/rngpui-cli-abc123 --out /tmp/popup.png
+```
 
 ## Native diff
 
@@ -219,7 +312,9 @@ list.current?.update([{ id: "msg-1", disabled: true }]);
   badge).
 
 - Handle: `append`, `prepend` (history, oldest first), `update` (patches by `id`; pass
-  `""` to clear a string or color field), `clear`, `scrollToBottom`.
+  `""` to clear a string or color field), `clear`, `scrollToBottom`, `scrollToTop`,
+  `scrollToMessage(id, { align: "top" | "center" | "bottom" })` (default center),
+  `pageUp`, `pageDown` (one viewport, for the app's Page Up / Page Down keys).
 - Elements are separated by one space; whitespace inside a text element separates words.
   Set `trailingSpace: false` on an element to glue the next one to it (`@alice` + `,`).
 - Layout follows Chatterino: 8/4 px margins, elements bottom-aligned per line, emotes
@@ -234,10 +329,11 @@ list.current?.update([{ id: "msg-1", disabled: true }]);
   and trimming keep the rows you are reading in place, and `onScrollState` reports
   `{ atBottom, paused, unseen }`. `pauseOnHover` freezes the view while the pointer is
   over the list.
-- Interaction: `onHover` fires with the user, link, emote or badge under the pointer and
-  its window-space bounds (`null` when it leaves), so tooltips can be React overlays.
-  `onPress` fires for user/link/emote/badge, or `message` for anything else, with the
-  button and pointer position. Left clicks fire on release unless the pointer moved more
+- Interaction: `onHover` fires with the user, link, emote or badge under the pointer, its
+  window-space bounds and the pointer position (`pointerX`, `pointerY`), or `null` when
+  it leaves, so tooltips can be React overlays. `onPress` fires for user/link/emote/badge,
+  or `message` for anything else, with the button, pointer position and modifier keys
+  (`shiftKey`, `ctrlKey`, `altKey`, `metaKey`). Left clicks fire on release unless the pointer moved more
   than 15 px (that was a selection); right and middle clicks fire on press.
 - Selection: drag selects across messages, double-click selects a word, triple-click
   selects the message body. Ctrl+C (Cmd+C on macOS) copies it, including while a
@@ -334,6 +430,7 @@ const nonce = randomUUID();
 | `Processes.findRunning(names): Promise<string[]>` | The given names that match a running process, compared case-insensitively against the process name and its executable's file name (Linux `/proc/*/comm` and `cmdline`, macOS `ps`). |
 | `fetch` | `Response` has `status`, `statusText`, `ok` (2xx), `url` (after redirects), `redirected`, `headers` (`get`/`has`/`forEach`/`entries`/`keys`/`values`, iterable), `text()`, `json()`, `arrayBuffer()`, `clone()`. Bodies may be strings, `URLSearchParams`, `ArrayBuffer`, or any typed array/`DataView`; network errors reject with `TypeError`. |
 | `crypto.getRandomValues`, `crypto.randomUUID` | Backed by the OS random number generator; also exported as `getRandomValues()` / `randomUUID()`. |
+| `NativeClipboard.read(): Promise<string>` | The clipboard's text (`""` when it holds none), read on the main thread. `NativeClipboard.setString(text)` writes it. |
 | `<Image>` | Animated GIF and WebP play, redrawing only when a frame is due; still images never schedule redraws. |
 
 The data file lives at `$XDG_DATA_HOME/<app id>/local-storage.json` (default
@@ -346,6 +443,7 @@ macOS. The app id is `RNGPUI_APP_ID`, else `RNGPUI_APP_NAME`, else `react-native
 | `RNGPUI_TEST_MODE` | without `RNGPUI_STORAGE_DIR`, keeps `localStorage` in memory; also suppresses real notifications and sound output |
 | `RNGPUI_FAKE_NOTIFICATIONS=<file>` | append each notification as a JSON line instead of showing it |
 | `RNGPUI_FAKE_SOUND_DIR=<dir>` | write each decoded sound as `sound-NNN.wav` instead of playing it |
+| `RNGPUI_FAKE_CLIPBOARD=<file>` | `NativeClipboard` reads and writes this file instead of the clipboard (a headless Wayland window never receives the selection) |
 
 ## Building from source
 

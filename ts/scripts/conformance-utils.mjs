@@ -199,7 +199,7 @@ function captureLinuxWindow(window, path) {
     }
     const target = resolve(path);
     rmSync(target, { force: true });
-    const request = join(linuxWindowRegistryDir(), `${window.pid}.capture`);
+    const request = window.capture_request ?? join(linuxWindowRegistryDir(), `${window.pid}.capture`);
     writeFileSync(`${request}.staging`, target);
     renameSync(`${request}.staging`, request);
     const deadline = Date.now() + 10_000;

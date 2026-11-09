@@ -9,11 +9,15 @@ import Reconciler, {
     serializeContainer,
     invalidateSerializeCaches,
     dispatchEvent,
+    pushWindowTree,
+    windowContainers,
     type Container,
     type ReconcilerCommitDiagnostics,
 } from "./reconciler";
 import { sendHostCommand, setEventBatcher, startBridge, type Bridge, type BridgeEvent, type BridgeOptions, type SerializedNode } from "./runtime";
-import { createWireSourceCache, toWireDelta, type BigFieldCache, type WireDeltaStats } from "./wire-delta";
+import { sameTopLevelTree, sharedWireSources, toWireDelta, type BigFieldCache, type WireDeltaStats } from "./wire-delta";
+import { dispatchWindowEvent } from "./window-host";
+import { applyAppStateEvent, applyWindowFocus } from "./app-state";
 
 // coalesced event batches (resize/layout/scroll floods) dispatch inside one React update so
 // a window resize produces one re-render per batch instead of one per event.
@@ -23,8 +27,6 @@ import { Dimensions } from "./Dimensions";
 import { applyNativeColorScheme, setAppearanceUpdateSink } from "./colors";
 import { dispatchPseudo } from "./platform-driver";
 
-const EMPTY_NODES: ReadonlyArray<SerializedNode> = [];
-const EMPTY_STYLE: Readonly<Record<string, unknown>> = {};
 const COMMIT_TRACE = typeof process !== "undefined" && !!process.env?.RNGPUI_COMMIT_TRACE;
 
 export type DevtoolsOptions = {
@@ -83,7 +85,7 @@ export function createRoot(options: RootOptions = {}): Root {
     // per-globalId large text/src the host currently holds; toWireDelta omits an unchanged
     // big field on a changed node and marks textRef/srcRef. see its doc.
     const sentBigFields: BigFieldCache = new Map();
-    const sentSources = createWireSourceCache();
+    const sentSources = sharedWireSources;
     const bridgeOptions: BridgeOptions = {
         inspector: options.devtools === true || (typeof options.devtools === "object" && options.devtools.inspector === true),
         performanceHud: typeof options.devtools === "object" && options.devtools.performanceHud === true,
@@ -98,30 +100,7 @@ export function createRoot(options: RootOptions = {}): Root {
     // GPUI re-render → webview-host reposition for no-op commits (the selection
     // cascade's redundant frames, hover that didn't change output, background
     // streaming). This is what stops the webview "doing a lot" on idle churn.
-    const sameTree = (a: SerializedNode, b: SerializedNode): boolean => {
-        if (a === b) return true;
-        if (a.globalId !== b.globalId) return false;
-        const ac = a.children ?? EMPTY_NODES;
-        const bc = b.children ?? EMPTY_NODES;
-        if (ac.length !== bc.length) return false;
-        for (let i = 0; i < ac.length; i++) if (ac[i] !== bc[i]) return false;
-        // root style carries the window size (resize); compare it directly (tiny).
-        const as = a.style ?? EMPTY_STYLE;
-        const bs = b.style ?? EMPTY_STYLE;
-        const ak = Object.keys(as);
-        let bLength = 0;
-        for (const key in bs) if (Object.prototype.hasOwnProperty.call(bs, key)) bLength++;
-        if (ak.length !== bLength) return false;
-        for (const k of ak) {
-            if (
-                !Object.prototype.hasOwnProperty.call(bs, k) ||
-                (as as Record<string, unknown>)[k] !== (bs as Record<string, unknown>)[k]
-            ) {
-                return false;
-            }
-        }
-        return true;
-    };
+    const sameTree = sameTopLevelTree;
     const pushTree = (tree: SerializedNode, diagnostics?: ReconcilerCommitDiagnostics) => {
         const bridgeStartedAt = COMMIT_TRACE ? performance.now() : 0;
         // sameTree compares the MEMOIZED tree (cheap O(top-children) ref check) to skip
@@ -206,6 +185,18 @@ export function createRoot(options: RootOptions = {}): Root {
             resolveRendererProvenance(e.requestId, e.provenance);
             return;
         }
+        if (e.type === "window") {
+            if (e.windowId === 0) {
+                if (e.event === "focus" || e.event === "blur") applyWindowFocus(0, e.event === "focus");
+                return;
+            }
+            dispatchWindowEvent(e);
+            return;
+        }
+        if (e.type === "appState") {
+            applyAppStateEvent(e.state, e.windowId);
+            return;
+        }
         // renderer→JS pseudo lane: a native hover/press flip routes to the platform
         // driver's listeners (tamagui), NOT the React event path — so a hover never
         // triggers a React commit. Handled before dispatchEvent so it never falls through.
@@ -227,7 +218,11 @@ export function createRoot(options: RootOptions = {}): Root {
         // scheme-resolved colors (DynamicColorIOS bakes at serialize time) —
         // drop all caches so this re-serialize resolves under the new scheme.
         invalidateSerializeCaches(container);
+        for (const windowContainer of windowContainers()) invalidateSerializeCaches(windowContainer);
         if (bridge) pushTree(serializeContainer(container));
+        for (const windowContainer of windowContainers()) {
+            if (windowContainer.windowId !== undefined) pushWindowTree(windowContainer.windowId);
+        }
     });
 
     // Imperative host → frame commands (WebView.injectJavaScript / reload). Commands

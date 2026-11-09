@@ -89,6 +89,7 @@ mod selection;
 mod sound;
 mod storage;
 mod style;
+mod windows;
 
 use elements::webview::WebViewContent;
 use elements::{
@@ -245,8 +246,18 @@ const RN_WEBVIEW_SHIM: &str = "window.ReactNativeWebView={postMessage:function(d
 thread_local! {
     static PRIOR_TREE_INDEX: RefCell<HashMap<u64, Arc<ReactElement>>> =
         RefCell::new(HashMap::new());
+    static PRIOR_WINDOW_TREE_INDEX: RefCell<HashMap<u64, HashMap<u64, Arc<ReactElement>>>> =
+        RefCell::new(HashMap::new());
     static SOURCE_FILES: RefCell<HashMap<u64, String>> =
         RefCell::new(HashMap::new());
+}
+
+static INCOMING: std::sync::OnceLock<flume::Sender<Incoming>> = std::sync::OnceLock::new();
+
+pub(crate) fn send_incoming(message: Incoming) -> bool {
+    INCOMING
+        .get()
+        .is_some_and(|sender| sender.send(message).is_ok())
 }
 
 // Walk a reconstructed tree (including reused subtrees) into a globalId -> Arc index
@@ -961,6 +972,14 @@ struct ServiceApp {
     // gates, capture tooling) read stale state while the live tree had moved on.
     debug_dump_scheduled: bool,
     input_selection_at: Option<std::time::Instant>,
+    window_id: u64,
+    role: windows::WindowRole,
+    chrome: bool,
+    window_title: String,
+    close_on_blur: bool,
+    close_on_escape: bool,
+    frames_painted: Rc<std::cell::Cell<u64>>,
+    modifiers: gpui::Modifiers,
 }
 
 fn accumulate_pending_root_paint_only(
@@ -975,6 +994,16 @@ struct FrameMarker {
     child: AnyElement,
     input: Option<PaintedInputSnapshot>,
     content_epoch: u64,
+    secondary: Option<SecondaryFrame>,
+}
+
+struct SecondaryFrame {
+    window_id: u64,
+    painted: Rc<std::cell::Cell<u64>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    title: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    kind: &'static str,
 }
 
 impl FrameMarker {
@@ -983,6 +1012,16 @@ impl FrameMarker {
             child,
             input,
             content_epoch,
+            secondary: None,
+        }
+    }
+
+    fn secondary(child: AnyElement, content_epoch: u64, secondary: SecondaryFrame) -> Self {
+        Self {
+            child,
+            input: None,
+            content_epoch,
+            secondary: Some(secondary),
         }
     }
 }
@@ -1064,6 +1103,22 @@ impl Element for FrameMarker {
         window.set_paint_patch_epoch(crate::anim_overlay::opacity_ids_epoch());
         self.child.paint(window, cx);
         bridge::flush_layout_frame();
+        if let Some(secondary) = &self.secondary {
+            let painted = secondary.painted.get() + 1;
+            secondary.painted.set(painted);
+            #[cfg(target_os = "linux")]
+            if painted == 1 {
+                linux_window_registry::publish_secondary(
+                    secondary.window_id,
+                    window,
+                    &secondary.title,
+                    secondary.kind,
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = secondary.window_id;
+            return;
+        }
         let frame = anim_trace::on_frame_painted();
         #[cfg(target_os = "linux")]
         if FIRST_TREE_APPLIED.load(Ordering::SeqCst) {
@@ -1099,6 +1154,109 @@ impl IntoElement for FrameMarker {
 }
 
 impl ServiceApp {
+    fn new(
+        window_id: u64,
+        role: windows::WindowRole,
+        chrome: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let root = fill_root(fallback_root());
+        let tree_metadata = TreeMetadata::collect(&root);
+        let main = role == windows::WindowRole::Main;
+        Self {
+            app_focus: cx.focus_handle(),
+            root,
+            tree_metadata,
+            root_dirty: true,
+            root_lifecycle_dirty: true,
+            root_paint_only: false,
+            dump_tree_path: if main {
+                std::env::var("RNGPUI_DUMP_TREE").ok()
+            } else {
+                None
+            },
+            last_w: 0.0,
+            last_h: 0.0,
+            inputs: HashMap::new(),
+            input_placeholders: HashMap::new(),
+            input_secure: HashMap::new(),
+            input_event_counts: HashMap::new(),
+            suppressed_input_changes: HashMap::new(),
+            webviews: HashMap::new(),
+            inspector: if main {
+                inspector::InspectorState::from_env()
+            } else {
+                inspector::InspectorState::new(false)
+            },
+            focused_input: None,
+            last_debug_dump: None,
+            debug_dump_scheduled: false,
+            input_selection_at: None,
+            #[cfg(target_os = "linux")]
+            context_menu: None,
+            window_id,
+            role,
+            chrome,
+            window_title: String::new(),
+            close_on_blur: false,
+            close_on_escape: false,
+            frames_painted: Rc::new(std::cell::Cell::new(0)),
+            modifiers: gpui::Modifiers::default(),
+        }
+    }
+
+    fn emit_modifier_keys(&mut self, modifiers: gpui::Modifiers) {
+        let previous = std::mem::replace(&mut self.modifiers, modifiers);
+        for (key, pressed) in modifier_transitions(previous, modifiers) {
+            let listener = if pressed {
+                first_app_key_press_listener(&self.root)
+            } else {
+                first_app_listener(&self.root, "keyUp")
+            };
+            let Some(id) = listener else {
+                continue;
+            };
+            if pressed {
+                bridge::key_press(
+                    id,
+                    key,
+                    modifiers.shift,
+                    modifiers.control,
+                    modifiers.alt,
+                    modifiers.platform,
+                    false,
+                );
+            } else {
+                bridge::key_up(
+                    id,
+                    key,
+                    modifiers.shift,
+                    modifiers.control,
+                    modifiers.alt,
+                    modifiers.platform,
+                );
+            }
+        }
+    }
+
+    fn is_main(&self) -> bool {
+        self.role == windows::WindowRole::Main
+    }
+
+    fn apply_secondary_tree(&mut self, tree: Arc<ReactElement>, cx: &mut Context<Self>) {
+        let next_root = fill_root(tree);
+        let next_metadata = TreeMetadata::collect(&next_root);
+        let lifecycle_changed = self.tree_metadata != next_metadata;
+        if lifecycle_changed {
+            windows::retain_all_with(self.window_id, &next_metadata, cx);
+        }
+        self.root_lifecycle_dirty |= lifecycle_changed;
+        self.tree_metadata = next_metadata;
+        self.root = next_root;
+        self.root_dirty = true;
+        cx.notify();
+    }
+
     fn publish_input_focus(&mut self, id: u64) {
         if self.focused_input == Some(id) {
             return;
@@ -1346,7 +1504,7 @@ struct WebViewSpec {
     hidden: bool,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct LayoutSpec {
     id: u64,
     width: Option<f32>,
@@ -1405,10 +1563,38 @@ impl TreeMetadata {
         }
     }
 
+    fn extend_retained(&mut self, other: &TreeMetadata) {
+        self.node_ids.extend(other.node_ids.iter().copied());
+        self.native_layout_keys
+            .extend(other.native_layout_keys.iter().cloned());
+        self.layout_ids.extend(other.layout_ids.iter().copied());
+        self.layout_specs.extend(other.layout_specs.iter().cloned());
+        self.system_ids.extend(other.system_ids.iter().copied());
+        self.native_control_ids
+            .extend(other.native_control_ids.iter().copied());
+        self.diff_ids.extend(other.diff_ids.iter().copied());
+        self.chat_list_ids
+            .extend(other.chat_list_ids.iter().copied());
+        self.scroll_ids.extend(other.scroll_ids.iter().copied());
+    }
+
     fn has_native_snapshot_hosts(&self) -> bool {
         !self.webview_ids.is_empty()
             || !self.system_ids.is_empty()
             || !self.native_control_ids.is_empty()
+    }
+}
+
+fn retain_native_state_union(metadatas: &[&TreeMetadata]) {
+    match metadatas {
+        [only] => only.retain_native_state(),
+        _ => {
+            let mut union = TreeMetadata::default();
+            for metadata in metadatas {
+                union.extend_retained(metadata);
+            }
+            union.retain_native_state();
+        }
     }
 }
 
@@ -1600,19 +1786,39 @@ fn collect_tree_metadata(el: &Arc<ReactElement>, inherited_hidden: bool, out: &m
 }
 
 fn first_app_key_press_listener(el: &Arc<ReactElement>) -> Option<u64> {
+    first_app_listener(el, "keyPress")
+}
+
+fn first_app_listener(el: &Arc<ReactElement>, event: &str) -> Option<u64> {
     let text_owner = matches!(
         el.element_type.as_str(),
         "textinput" | "textarea" | "terminal" | "ghostty-terminal"
     );
-    if !text_owner && el.listens("keyPress") {
+    if !text_owner && el.listens(event) {
         return Some(el.global_id);
     }
     for c in &el.children {
-        if let Some(id) = first_app_key_press_listener(c) {
+        if let Some(id) = first_app_listener(c, event) {
             return Some(id);
         }
     }
     None
+}
+
+fn modifier_transitions(
+    previous: gpui::Modifiers,
+    next: gpui::Modifiers,
+) -> Vec<(&'static str, bool)> {
+    [
+        ("Control", previous.control, next.control),
+        ("Shift", previous.shift, next.shift),
+        ("Alt", previous.alt, next.alt),
+        ("Meta", previous.platform, next.platform),
+    ]
+    .into_iter()
+    .filter(|(_, before, after)| before != after)
+    .map(|(name, _, after)| (name, after))
+    .collect()
 }
 
 /// Map gpui's window appearance to the JS color-scheme name the bridge speaks.
@@ -1646,18 +1852,25 @@ impl Render for ServiceApp {
         if window.focused(cx).is_none() {
             window.focus(&self.app_focus);
         }
-        // reset the per-frame hit-test passthrough registry before this frame's prepaint
+        let main = self.is_main();
+        #[cfg(target_os = "macos")]
+        let hit_view = liquid_glass::gpui_ns_view_ptr(window).unwrap_or(0);
+        #[cfg(not(target_os = "macos"))]
+        let hit_view = 0;
+        // reset this window's hit-test passthrough registry before this frame's prepaint
         // pass repopulates it (webview rects + occluder rects, for native webview events).
-        hit_passthrough::begin_frame();
+        hit_passthrough::begin_frame(hit_view);
         // same, for the pointer spans that tell a covered element from one the pointer
         // actually reaches (see `elements::div::pointer_reaches`).
-        crate::elements::begin_pointer_frame();
-        // while the inspector overlay/menu is up it owns all mouse input — without this,
-        // a menu painted over a webview region is unclickable (clicks fall through to
-        // the page via the hitTest: passthrough).
-        hit_passthrough::set_input_grab(self.inspector.wants_input_grab());
-        // flush the previous frame's stage breakdown + reset accumulators for this frame.
-        frame_trace::begin_render(self.root_dirty);
+        crate::elements::begin_pointer_frame(window);
+        if main {
+            // while the inspector overlay/menu is up it owns all mouse input — without
+            // this, a menu painted over a webview region is unclickable (clicks fall
+            // through to the page via the hitTest: passthrough).
+            hit_passthrough::set_input_grab(self.inspector.wants_input_grab());
+            // flush the previous frame's stage breakdown + reset accumulators for this frame.
+            frame_trace::begin_render(self.root_dirty);
+        }
         // The tree is applied (and a re-render scheduled) by the jsc JS thread's
         // foreground task in `main`, not polled here — rendering is fully on-demand: this
         // runs only on a new tree, input, scroll, or resize, so the app idles at ~0fps.
@@ -1696,7 +1909,7 @@ impl Render for ServiceApp {
         // Emit a `resize` event whenever the content size changes, so the JS side
         // can update Dimensions and re-render. Bridges RN's Dimensions API.
         #[cfg(target_os = "linux")]
-        let vs = linux_frame::content_size(window);
+        let vs = linux_frame::content_size(window, self.chrome);
         #[cfg(not(target_os = "linux"))]
         let vs = window.viewport_size();
         let w: f64 = vs.width.into();
@@ -1705,7 +1918,15 @@ impl Render for ServiceApp {
         if viewport_changed {
             self.last_w = w;
             self.last_h = h;
-            bridge::resize(w as f32, h as f32);
+            if main {
+                bridge::resize(w as f32, h as f32);
+            } else {
+                bridge::window_event(
+                    self.window_id,
+                    "resize",
+                    serde_json::json!({ "width": w, "height": h }),
+                );
+            }
         }
 
         // ── tree-lifecycle work (gated on `root_dirty`) ──────────────────────────────
@@ -1716,7 +1937,7 @@ impl Render for ServiceApp {
         // A worklet-driven layout change (pane resize) moved a yoga box this frame — run
         // the lifecycle so native WebViews reposition. take() it unconditionally so the
         // flag is consumed even when root_dirty already forces the lifecycle.
-        let layout_dirty = crate::anim_overlay::take_layout_dirty();
+        let layout_dirty = main && crate::anim_overlay::take_layout_dirty();
 
         // ── retained-layout fast path decision ───────────────────────────────────────
         // Consume the paint-only-frame flag EVERY render (so a stale `true` can never leak
@@ -1731,14 +1952,18 @@ impl Render for ServiceApp {
         // full-layout frame's geometry and skips the ~7ms flexbox solve; otherwise it
         // clears the carried-over taffy tree and runs a normal full layout (capturing a
         // fresh retained frame for the next reuse). The disable env is the A/B escape hatch.
-        let paint_only = crate::anim_overlay::take_paint_only_frame();
+        if !main {
+            window.prepare_layout_frame(false, false);
+        }
+        let paint_only = main && crate::anim_overlay::take_paint_only_frame();
         let retained_layout_disabled = std::env::var_os("RNGPUI_DISABLE_RETAINED_LAYOUT").is_some();
         // test escape hatch: force the reuse path on EVERY geometry-stable idle frame
         // (ignoring the paint-only trigger), so conformance can drive the retained path on
         // every repaint and assert pixel/bounds parity. Never set in production.
         let force_reuse = std::env::var_os("RNGPUI_FORCE_RETAINED_LAYOUT").is_some();
         let root_allows_reuse = !self.root_dirty || (self.root_paint_only && paint_only);
-        let want_reuse = (paint_only || force_reuse)
+        let want_reuse = main
+            && (paint_only || force_reuse)
             && root_allows_reuse
             && !layout_dirty
             && !viewport_changed
@@ -1757,7 +1982,8 @@ impl Render for ServiceApp {
         // a resize, a native layout animation, the inspector overlay) because each of those
         // can reshape the graph out from under a positional replay.
         // RNGPUI_DISABLE_RETAINED_LAYOUT disables both retained modes for diagnostics.
-        let want_incremental = !want_reuse
+        let want_incremental = main
+            && !want_reuse
             && self.root_dirty
             && elements::incremental_eligible()
             && !layout_dirty
@@ -1767,8 +1993,8 @@ impl Render for ServiceApp {
             && !self.inspector.wants_input_grab()
             && !render_gate_disabled()
             && !retained_layout_disabled;
-        let reusing = window.prepare_layout_frame(want_reuse, want_incremental);
-        if std::env::var_os("RNGPUI_RETAINED_TRACE").is_some() {
+        let reusing = main && window.prepare_layout_frame(want_reuse, want_incremental);
+        if main && std::env::var_os("RNGPUI_RETAINED_TRACE").is_some() {
             eprintln!(
                 "[retained] paint_only={paint_only} want_reuse={want_reuse} reusing={reusing} \
                  | root_dirty={} layout_dirty={layout_dirty} viewport_changed={viewport_changed} \
@@ -1999,7 +2225,7 @@ impl Render for ServiceApp {
                     self.input_secure.insert(id, secure);
                 }
             }
-            elements::input::set_entities(self.inputs.clone());
+            elements::input::set_entities(self.window_id, self.inputs.clone());
             let inputs_done = std::time::Instant::now();
 
             // Same lifecycle for <WebView>: create a native child view per id, then
@@ -2088,7 +2314,11 @@ impl Render for ServiceApp {
                     let _ = view.set_visible(true);
                 }
             }
-            elements::webview::set_webviews(self.webviews.clone(), webview_content);
+            elements::webview::set_webviews_for(
+                self.window_id,
+                self.webviews.clone(),
+                webview_content,
+            );
             let webviews_done = std::time::Instant::now();
 
             if self.inspector.enabled() {
@@ -2101,7 +2331,9 @@ impl Render for ServiceApp {
             let inspector_done = std::time::Instant::now();
 
             #[cfg(target_os = "macos")]
-            ax::sync_tree(window, &self.root);
+            if main {
+                ax::sync_tree(window, &self.root);
+            }
             let accessibility_done = std::time::Instant::now();
             self.write_debug_dump(cx);
             let debug_done = std::time::Instant::now();
@@ -2195,9 +2427,33 @@ impl Render for ServiceApp {
             // commit proves otherwise. Arm retained layout before GPUI schedules
             // its hover repaint; the Tree handler clears this flag if an event
             // callback changes geometry before that frame is drawn.
-            .capture_any_mouse_move(|_event: &MouseMoveEvent, _window, _cx| {
-                crate::anim_overlay::arm_paint_only_frame();
+            .capture_any_mouse_move(move |event: &MouseMoveEvent, window, _cx| {
+                windows::note_pointer(window, event.position);
+                if main {
+                    crate::anim_overlay::arm_paint_only_frame();
+                }
             })
+            .capture_any_mouse_down(|event: &MouseDownEvent, window, _cx| {
+                windows::note_pointer(window, event.position);
+            })
+            .on_modifiers_changed(cx.listener(
+                |this, event: &ModifiersChangedEvent, _window, _cx| {
+                    this.emit_modifier_keys(event.modifiers);
+                },
+            ))
+            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, _window, _cx| {
+                if let Some(id) = first_app_listener(&this.root, "keyUp") {
+                    let modifiers = &event.keystroke.modifiers;
+                    bridge::key_up(
+                        id,
+                        &js_key_for_keystroke(&event.keystroke),
+                        modifiers.shift,
+                        modifiers.control,
+                        modifiers.alt,
+                        modifiers.platform,
+                    );
+                }
+            }))
             .child(root);
 
         #[cfg(not(target_os = "macos"))]
@@ -2269,7 +2525,7 @@ impl Render for ServiceApp {
                 .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     let root = this.root.clone();
                     #[cfg(target_os = "linux")]
-                    let size = linux_frame::content_size(window);
+                    let size = linux_frame::content_size(window, this.chrome);
                     #[cfg(not(target_os = "linux"))]
                     let size = window.viewport_size();
                     let viewport = (size.width.into(), size.height.into());
@@ -2299,6 +2555,19 @@ impl Render for ServiceApp {
         #[cfg(target_os = "linux")]
         if let Some(menu) = &self.context_menu {
             frame = frame.child(menu.element());
+        }
+
+        if !main {
+            return FrameMarker::secondary(
+                frame.into_any_element(),
+                crate::anim_overlay::mutation_epoch(),
+                SecondaryFrame {
+                    window_id: self.window_id,
+                    painted: self.frames_painted.clone(),
+                    title: self.window_title.clone(),
+                    kind: self.role.label(),
+                },
+            );
         }
 
         if let Some(hud) = perf_hud::element(self.tree_metadata.node_ids.len()) {
@@ -2391,6 +2660,35 @@ enum AppCommandMenuItem {
 pub(crate) enum Incoming {
     Quit,
     Tree(Arc<ReactElement>),
+    WindowOpen(windows::WindowSpec),
+    WindowUpdate(windows::WindowSpec),
+    WindowClose {
+        id: u64,
+    },
+    WindowFocus {
+        id: u64,
+    },
+    WindowTree {
+        window: u64,
+        root: Arc<ReactElement>,
+    },
+    ForWindow {
+        window: u64,
+        inner: Box<Incoming>,
+    },
+    DebugWindows {
+        reply: flume::Sender<serde_json::Value>,
+    },
+    DebugSystemClose {
+        reply: flume::Sender<serde_json::Value>,
+    },
+    DebugActivate {
+        active: bool,
+        reply: flume::Sender<serde_json::Value>,
+    },
+    ClipboardRead {
+        reply: flume::Sender<Option<String>>,
+    },
     /// The window's size, sent by `createRoot` before React renders. This is what
     /// startup blocks on: it arrives as the bundle finishes evaluating, roughly a
     /// render ahead of the first tree, so GPUI/Metal window creation overlaps that
@@ -2535,6 +2833,12 @@ pub(crate) enum Incoming {
     DebugRealTap {
         x: f32,
         y: f32,
+        button: MouseButton,
+        modifiers: gpui::Modifiers,
+        reply: flume::Sender<serde_json::Value>,
+    },
+    DebugRealModifiers {
+        modifiers: gpui::Modifiers,
         reply: flume::Sender<serde_json::Value>,
     },
     DebugRealContext {
@@ -2867,6 +3171,17 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
                 critical: v.get("critical").and_then(|x| x.as_bool()).unwrap_or(false),
             }),
             "openWindow" => Some(Incoming::OpenWindow),
+            "windowOpen" => windows::parse_spec(v).map(Incoming::WindowOpen),
+            "windowUpdate" => windows::parse_spec(v).map(Incoming::WindowUpdate),
+            "windowClose" => {
+                let id = v.get("windowId").and_then(|x| x.as_u64())?;
+                PRIOR_WINDOW_TREE_INDEX.with(|indexes| indexes.borrow_mut().remove(&id));
+                Some(Incoming::WindowClose { id })
+            }
+            "windowFocus" => v
+                .get("windowId")
+                .and_then(|x| x.as_u64())
+                .map(|id| Incoming::WindowFocus { id }),
             "openURL" => {
                 let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
                 Some(Incoming::OpenUrl {
@@ -2902,6 +3217,23 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
                 }
             }
         });
+    }
+    if let Some(window) = v
+        .get("$window")
+        .and_then(|x| x.as_u64())
+        .filter(|id| *id != 0)
+    {
+        let root = PRIOR_WINDOW_TREE_INDEX.with(|indexes| {
+            let indexes = indexes.borrow();
+            match indexes.get(&window) {
+                Some(prior) => parse_json_tree(v, prior),
+                None => parse_json_tree(v, &HashMap::new()),
+            }
+        })?;
+        let mut next_index = HashMap::new();
+        index_tree(&root, &mut next_index);
+        PRIOR_WINDOW_TREE_INDEX.with(|indexes| indexes.borrow_mut().insert(window, next_index));
+        return Some(Incoming::WindowTree { window, root });
     }
     // a tree (full or delta) arrives here once per React commit. resolve any `ref` nodes
     // against the prior commit's index, then rebuild the index from the reconstructed
@@ -3254,6 +3586,138 @@ fn linux_app_id() -> String {
         .unwrap_or_else(|| "react-native-gpui".to_string())
 }
 
+fn fake_clipboard_path() -> Option<String> {
+    std::env::var("RNGPUI_FAKE_CLIPBOARD")
+        .ok()
+        .filter(|path| !path.is_empty())
+}
+
+fn read_clipboard_text(cx: &mut App) -> Option<String> {
+    if let Some(path) = fake_clipboard_path() {
+        return std::fs::read_to_string(path).ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cx;
+        read_general_pasteboard_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    cx.read_from_clipboard().and_then(|item| item.text())
+}
+
+fn route_target(msg: &Incoming, cx: &App) -> Option<u64> {
+    if !windows::has_secondary() {
+        return None;
+    }
+    match msg {
+        Incoming::FocusInput { id }
+        | Incoming::ClearInput { id }
+        | Incoming::AccessibilityEditInput { id, .. }
+        | Incoming::AccessibilitySetInputFocus { id, .. }
+        | Incoming::Eval { id, .. }
+        | Incoming::Reload { id }
+        | Incoming::ScrollTo { id, .. }
+        | Incoming::ScrollToEnd { id }
+        | Incoming::ChatList { id, .. }
+        | Incoming::TerminalSession { id, .. } => windows::owner_of_node(*id, cx),
+        Incoming::BlurInput => windows::window_with_focused_input(cx),
+        Incoming::NativeContextMenu(_) => windows::last_pointer_window(),
+        _ => None,
+    }
+}
+
+fn reply_sender(msg: &Incoming) -> Option<flume::Sender<serde_json::Value>> {
+    match msg {
+        Incoming::DebugChatListState { reply, .. }
+        | Incoming::DebugRealScroll { reply, .. }
+        | Incoming::DebugClipboard { reply }
+        | Incoming::DebugDump { reply }
+        | Incoming::DebugTerminalPresentation { reply, .. }
+        | Incoming::DebugTap { reply, .. }
+        | Incoming::DebugDropFiles { reply, .. }
+        | Incoming::DebugRealTap { reply, .. }
+        | Incoming::DebugRealModifiers { reply, .. }
+        | Incoming::DebugRealContext { reply, .. }
+        | Incoming::DebugRealDown { reply, .. }
+        | Incoming::DebugRealUp { reply, .. }
+        | Incoming::DebugRealMove { reply, .. }
+        | Incoming::DebugRealDrag { reply, .. }
+        | Incoming::DebugRealDragPath { reply, .. }
+        | Incoming::DebugResize { reply, .. }
+        | Incoming::DebugFullLayout { reply }
+        | Incoming::DebugPerformanceHud { reply, .. }
+        | Incoming::DebugDragAt { reply, .. }
+        | Incoming::DebugScrollAt { reply, .. }
+        | Incoming::DebugScrollDriverStats { reply, .. }
+        | Incoming::DebugNativeDriverWheel { reply, .. }
+        | Incoming::DebugNativeDriverSequence { reply, .. }
+        | Incoming::DebugNativeScrollAt { reply, .. }
+        | Incoming::DebugTypeText { reply, .. }
+        | Incoming::DebugInputState { reply }
+        | Incoming::DebugImeSetMarked { reply, .. }
+        | Incoming::DebugImeCommit { reply, .. }
+        | Incoming::DebugImeUnmark { reply }
+        | Incoming::DebugAccessibilityEditInput { reply, .. }
+        | Incoming::DebugAccessibilitySetInputFocus { reply, .. }
+        | Incoming::DebugKeyPress { reply, .. }
+        | Incoming::DebugRealKey { reply, .. }
+        | Incoming::DebugDispatchAction { reply, .. }
+        | Incoming::DebugWebviewCopyProof { reply, .. }
+        | Incoming::DebugWindows { reply }
+        | Incoming::DebugSystemClose { reply }
+        | Incoming::DebugActivate { reply, .. } => Some(reply.clone()),
+        _ => None,
+    }
+}
+
+fn capture_request_window(request: &str) -> u64 {
+    request
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix("window="))
+        .and_then(|id| id.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_secondary_windows_beside(capture_path: &str, cx: &mut gpui::AsyncApp) {
+    let targets = windows::capture_request_targets();
+    if targets.is_empty() {
+        return;
+    }
+    let stem = capture_path.strip_suffix(".png").unwrap_or(capture_path);
+    for (id, handle) in targets {
+        let path = format!("{stem}.window-{id}.png");
+        let _ = handle.update(cx, |_root, window, _cx| {
+            window.capture_next_frame(Box::new(move |frame| {
+                if let Some(frame) = frame {
+                    write_png_atomically(&path, &frame);
+                }
+            }));
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn capture_requested_secondary_windows(cx: &mut App) {
+    for (id, handle) in windows::capture_request_targets() {
+        let request_path = linux_window_registry::secondary_capture_request_path(id);
+        let Ok(target) = std::fs::read_to_string(&request_path) else {
+            continue;
+        };
+        let _ = std::fs::remove_file(&request_path);
+        let target = target.trim().to_string();
+        if target.is_empty() {
+            continue;
+        }
+        let _ = handle.update(cx, |_root, window, _cx| {
+            window.capture_next_frame(Box::new(move |frame| match frame {
+                Some(frame) => write_png_atomically(&target, &frame),
+                None => eprintln!("[rngpui capture] this window cannot read back frames"),
+            }));
+        });
+    }
+}
+
 fn load_bundle() -> Vec<u8> {
     let path = match std::env::var("RNGPUI_BUNDLE") {
         Ok(p) => p,
@@ -3470,6 +3934,7 @@ fn main() {
     // The worklet/UI runtime (start_ui) starts first, then the app bundle (start), so
     // reanimated's shared memory and UI loop are ready before the first React commit.
     let (tree_tx, tree_rx) = flume::unbounded::<Incoming>();
+    let tree_tx_for_pump = tree_tx.clone();
     #[cfg(target_os = "macos")]
     {
         let focus_tx = tree_tx.clone();
@@ -3651,6 +4116,11 @@ fn main() {
         cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
         cx.set_menus(mac_chrome_menus());
         cx.on_window_closed(|cx| {
+            if windows::is_main_closed(cx) {
+                windows::close_all_secondary(cx);
+                cx.quit();
+                return;
+            }
             if cx.windows().is_empty() {
                 cx.quit();
             }
@@ -3698,42 +4168,31 @@ fn main() {
         } else {
             anchored_window_origin(win_w, win_h, cx).unwrap_or(window_origin)
         };
-        let app_root = fill_root(fallback_root());
-        let tree_metadata = TreeMetadata::collect(&app_root);
-        tree_metadata.retain_native_state();
         bridge::ready(win_w, win_h);
-
-        // The view that renders the tree. Created up front so the applier task below
-        // can update it directly.
-        let content = cx.new(|cx| ServiceApp {
-            app_focus: cx.focus_handle(),
-            root: app_root,
-            tree_metadata,
-            root_dirty: true,
-            root_lifecycle_dirty: true,
-            root_paint_only: false,
-            dump_tree_path: std::env::var("RNGPUI_DUMP_TREE").ok(),
-            last_w: 0.0,
-            last_h: 0.0,
-            inputs: HashMap::new(),
-            input_placeholders: HashMap::new(),
-            input_secure: HashMap::new(),
-            input_event_counts: HashMap::new(),
-            suppressed_input_changes: HashMap::new(),
-            webviews: HashMap::new(),
-            inspector: inspector::InspectorState::from_env(),
-            focused_input: None,
-            last_debug_dump: None,
-            debug_dump_scheduled: false,
-            input_selection_at: None,
-            #[cfg(target_os = "linux")]
-            context_menu: None,
+        windows::set_launch_config(windows::LaunchConfig {
+            test_mode,
+            background,
+            show_window,
+            offscreen_test_window,
+            capture_onscreen,
         });
 
         let borderless = test_mode || std::env::var("RNGPUI_BORDERLESS").is_ok();
         #[cfg(target_os = "linux")]
+        linux_frame::configure(!borderless);
+        #[cfg(target_os = "linux")]
+        let main_chrome = linux_frame::main_chrome();
+        #[cfg(not(target_os = "linux"))]
+        let main_chrome = false;
+
+        // The view that renders the tree. Created up front so the applier task below
+        // can update it directly.
+        let content =
+            cx.new(|cx| ServiceApp::new(0, windows::WindowRole::Main, main_chrome, cx));
+        content.read(cx).tree_metadata.retain_native_state();
+
+        #[cfg(target_os = "linux")]
         let window_size = {
-            linux_frame::configure(!borderless);
             let chrome = linux_frame::chrome_size(linux_display::expects_client_decorations(
                 linux_frame::requested_decorations(),
             ));
@@ -3798,6 +4257,7 @@ fn main() {
         };
 
         let pump = content.clone();
+        let _ = INCOMING.set(tree_tx_for_pump.clone());
         startup_mark("pre open_window");
         let window_handle = cx
             .open_window(options, move |window, cx| {
@@ -3844,6 +4304,7 @@ fn main() {
                 let content_for_activation = content.clone();
                 content_for_activation.update(cx, |_this, cx| {
                     cx.observe_window_activation(window, |this, window, cx| {
+                        windows::note_activation(0, window.is_window_active(), cx);
                         if window.is_window_active() {
                             return;
                         }
@@ -3854,18 +4315,27 @@ fn main() {
                     })
                     .detach();
                 });
-                let content_for_keys = content.clone();
-                cx.intercept_keystrokes(move |event, _window, cx| {
+                cx.intercept_keystrokes(move |event, window, cx| {
+                    let Some((window_id, app)) = windows::app_for(window) else {
+                        return;
+                    };
                     let key = js_key_for_keystroke(&event.keystroke);
-                    let shift = event.keystroke.modifiers.shift;
-                    let control = event.keystroke.modifiers.control;
-                    let alt = event.keystroke.modifiers.alt;
-                    let platform = event.keystroke.modifiers.platform;
-                    let _ = content_for_keys.update(cx, |this, _cx| {
-                        if let Some(id) = first_app_key_press_listener(&this.root) {
-                            bridge::key_press(id, &key, shift, control, alt, platform, false);
-                        }
-                    });
+                    let modifiers = &event.keystroke.modifiers;
+                    let shift = modifiers.shift;
+                    let control = modifiers.control;
+                    let alt = modifiers.alt;
+                    let platform = modifiers.platform;
+                    let (listener, close_on_escape) = {
+                        let this = app.read(cx);
+                        (first_app_key_press_listener(&this.root), this.close_on_escape)
+                    };
+                    if let Some(id) = listener {
+                        bridge::key_press(id, &key, shift, control, alt, platform, false);
+                    }
+                    let plain_escape = event.keystroke.key == "escape" && !modifiers.modified();
+                    if close_on_escape && plain_escape && window_id != 0 {
+                        windows::request_close(window_id, "escape");
+                    }
                 })
                 .detach();
                 // follow the system light/dark setting: gpui delivers an appearance
@@ -3899,6 +4369,7 @@ fn main() {
                 cx.new(|cx| gpui_component::Root::new(root_view, window, cx))
             })
             .expect("open window");
+        windows::register_main(window_handle, &pump);
         startup_mark("window opened (GPUI/Metal init)");
         #[cfg(target_os = "linux")]
         if std::env::var_os("RNGPUI_STARTUP_TIMING").is_some() {
@@ -4017,12 +4488,18 @@ fn main() {
                             30
                         }))
                         .await;
-                    if let Some(trigger) = capture_trigger.as_deref()
-                        && std::fs::remove_file(trigger).is_err()
-                    {
-                        continue;
+                    let mut target_window = 0;
+                    if let Some(trigger) = capture_trigger.as_deref() {
+                        let Ok(request) = std::fs::read_to_string(trigger) else {
+                            continue;
+                        };
+                        let _ = std::fs::remove_file(trigger);
+                        target_window = capture_request_window(&request);
                     }
-                    let still_open = window_handle
+                    let target_handle = windows::get(target_window)
+                        .map(|(handle, _)| handle)
+                        .unwrap_or(window_handle);
+                    let still_open = target_handle
                         .update(cx, |_root, window, _cx| {
                             if let Some(view_ptr) = liquid_glass::gpui_ns_view_ptr(window) {
                                 capture_png::capture_layer_to_png(
@@ -4056,15 +4533,24 @@ fn main() {
                     if in_flight.load(Ordering::Acquire) {
                         continue;
                     }
-                    if let Some(trigger) = capture_trigger.as_deref()
-                        && std::fs::remove_file(trigger).is_err()
-                    {
-                        continue;
+                    let mut target_window = 0;
+                    if let Some(trigger) = capture_trigger.as_deref() {
+                        let Ok(request) = std::fs::read_to_string(trigger) else {
+                            continue;
+                        };
+                        let _ = std::fs::remove_file(trigger);
+                        target_window = capture_request_window(&request);
                     }
+                    let target_handle = windows::get(target_window)
+                        .map(|(handle, _)| handle)
+                        .unwrap_or(window_handle);
                     in_flight.store(true, Ordering::Release);
                     let path = capture_path.clone();
                     let done = in_flight.clone();
-                    let still_open = window_handle
+                    if capture_trigger.is_none() {
+                        capture_secondary_windows_beside(&capture_path, cx);
+                    }
+                    let still_open = target_handle
                         .update(cx, |_root, window, _cx| {
                             window.capture_next_frame(Box::new(move |frame| {
                                 match frame {
@@ -4091,6 +4577,7 @@ fn main() {
                     cx.background_executor()
                         .timer(Duration::from_millis(40))
                         .await;
+                    let _ = cx.update(capture_requested_secondary_windows);
                     let Ok(target) = std::fs::read_to_string(&request_path) else {
                         continue;
                     };
@@ -4123,6 +4610,8 @@ fn main() {
         // before touching GPUI. Commands remain ordering barriers: a tree on either side
         // of a command is never reordered or dropped. This keeps recycler commit bursts
         // from starving native scroll presentation with obsolete intermediate trees.
+        let main_window_handle = window_handle;
+        let main_pump = pump.clone();
         cx.spawn(async move |cx| {
             let mut pending_msg = None;
             // whatever arrived while startup was waiting for the window size, in the
@@ -4164,10 +4653,145 @@ fn main() {
                     }
                     other => other,
                 };
+                let (msg, explicit_target) = match msg {
+                    Incoming::ForWindow { window, inner } => (*inner, Some(window)),
+                    other => (other, None),
+                };
+                let msg = match msg {
+                    Incoming::WindowOpen(spec) => {
+                        if cx.update(|cx| windows::open(spec, cx)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Incoming::WindowUpdate(spec) => {
+                        if cx.update(|cx| windows::update(spec, cx)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Incoming::WindowClose { id } => {
+                        if cx.update(|cx| windows::close(id, cx)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Incoming::WindowFocus { id } => {
+                        if cx.update(|cx| windows::focus(id, cx)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Incoming::WindowTree { window, root } => {
+                        if cx.update(|cx| windows::apply_tree(window, root, cx)).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Incoming::DebugWindows { reply } => {
+                        let listing = cx
+                            .update(windows::describe)
+                            .unwrap_or_else(|_| serde_json::json!({ "ok": false }));
+                        let _ = reply.send(listing);
+                        continue;
+                    }
+                    Incoming::ClipboardRead { reply } => {
+                        let text = cx.update(read_clipboard_text).ok().flatten();
+                        let _ = reply.send(text);
+                        continue;
+                    }
+                    other => other,
+                };
+                let routed_target = match explicit_target {
+                    Some(window) => Some(window),
+                    None => cx.update(|cx| route_target(&msg, cx)).ok().flatten(),
+                };
+                let target_window = routed_target.unwrap_or(0);
+                let is_main_target = target_window == 0;
+                let Some((window_handle, pump)) = windows::get(target_window) else {
+                    if let Some(reply) = reply_sender(&msg) {
+                        let _ = reply.send(serde_json::json!({
+                            "ok": false,
+                            "error": format!("no window {target_window}"),
+                        }));
+                    }
+                    continue;
+                };
+                macro_rules! window_gone {
+                    () => {
+                        if is_main_target {
+                            break;
+                        } else {
+                            continue;
+                        }
+                    };
+                }
+                if let Incoming::DebugActivate { active, reply } = &msg {
+                    let active = *active;
+                    let applied = cx
+                        .update(|cx| windows::simulate_activation(target_window, active, cx))
+                        .unwrap_or(false);
+                    let _ = reply.send(serde_json::json!({
+                        "ok": applied,
+                        "type": "activate",
+                        "window": target_window,
+                        "active": active,
+                    }));
+                    continue;
+                }
+                if let Incoming::DebugSystemClose { reply } = &msg {
+                    let response = if is_main_target {
+                        serde_json::json!({
+                            "ok": false,
+                            "error": "systemClose needs a secondary window id",
+                        })
+                    } else {
+                        windows::request_close(target_window, "system");
+                        serde_json::json!({ "ok": true, "type": "systemClose", "window": target_window })
+                    };
+                    let _ = reply.send(response);
+                    continue;
+                }
+                let extra_refresh: Vec<u64> = match &msg {
+                    Incoming::NativeLayout { key, .. } if windows::has_secondary() => cx
+                        .update(|cx| windows::owners_of_layout_key(key, cx))
+                        .unwrap_or_default(),
+                    Incoming::AnimateNodeStyle { global_id, .. } if windows::has_secondary() => cx
+                        .update(|cx| windows::owners_of(&[*global_id], cx).1)
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
                 match msg {
                     Incoming::Quit => {
                         let _ = cx.update(|cx| cx.quit());
                         break;
+                    }
+                    Incoming::SetNodeStyle { ops } if windows::has_secondary() => {
+                        let ids: Vec<u64> = ops.iter().map(|(id, _)| *id).collect();
+                        let (main_owns, secondary) = cx
+                            .update(|cx| windows::owners_of(&ids, cx))
+                            .unwrap_or((true, Vec::new()));
+                        if !crate::anim_overlay::apply_ops(ops) {
+                            continue;
+                        }
+                        if main_owns {
+                            let _ = main_pump.update(cx, |this, cx| {
+                                this.write_debug_dump(cx);
+                                cx.notify();
+                            });
+                            if main_window_handle
+                                .update(cx, |_root, window, root_cx| {
+                                    root_cx.notify();
+                                    window.refresh();
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        for window in secondary {
+                            let _ = cx.update(|cx| windows::refresh(window, cx));
+                        }
                     }
                     Incoming::FocusInput { id } => {
                         let applied = window_handle.update(cx, |_root, window, cx| {
@@ -4180,7 +4804,7 @@ fn main() {
                             })
                         });
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::AccessibilityEditInput {
@@ -4200,7 +4824,7 @@ fn main() {
                             })
                         });
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::AccessibilitySetInputFocus { id, focused } => {
@@ -4210,7 +4834,7 @@ fn main() {
                             })
                         });
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::ClearInput { id } => {
@@ -4229,7 +4853,7 @@ fn main() {
                             })
                         });
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::BlurInput => {
@@ -4237,7 +4861,7 @@ fn main() {
                             .update(cx, |_root, window, _cx| window.blur())
                             .is_err()
                         {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugRealScroll {
@@ -4277,10 +4901,47 @@ fn main() {
                             "dy": dy,
                         }));
                         if result.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
-                    Incoming::DebugRealTap { x, y, reply } => {
+                    Incoming::DebugRealModifiers { modifiers, reply } => {
+                        let reply_after_dispatch = reply.clone();
+                        let scheduled = window_handle.update(cx, |_root, window, cx| {
+                            window.defer(cx, move |window, cx| {
+                                let before = crate::bridge::events_emitted_count();
+                                dispatch_real_input(
+                                    window,
+                                    gpui::PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                                        modifiers,
+                                        capslock: gpui::Capslock::default(),
+                                    }),
+                                    cx,
+                                );
+                                let emitted =
+                                    crate::bridge::events_emitted_count().saturating_sub(before);
+                                let _ = reply_after_dispatch.send(serde_json::json!({
+                                    "ok": true,
+                                    "type": "realModifiers",
+                                    "eventsEmitted": emitted,
+                                }));
+                            });
+                        });
+                        if scheduled.is_err() {
+                            let _ = reply.send(serde_json::json!({
+                                "ok": false,
+                                "type": "realModifiers",
+                                "error": "window update failed",
+                            }));
+                            window_gone!();
+                        }
+                    }
+                    Incoming::DebugRealTap {
+                        x,
+                        y,
+                        button,
+                        modifiers,
+                        reply,
+                    } => {
                         // dispatch a REAL pointer event through gpui's hitbox hit-test (the
                         // same path an OS click takes). draw a fresh frame first so hitboxes
                         // are current, snapshot the host-event counter, dispatch
@@ -4306,16 +4967,16 @@ fn main() {
                                 gpui::PlatformInput::MouseMove(MouseMoveEvent {
                                     position,
                                     pressed_button: None,
-                                    modifiers: gpui::Modifiers::default(),
+                                    modifiers,
                                 }),
                                 cx,
                             );
                             dispatch_real_input(
                                 window,
                                 gpui::PlatformInput::MouseDown(MouseDownEvent {
-                                    button: MouseButton::Left,
+                                    button,
                                     position,
-                                    modifiers: gpui::Modifiers::default(),
+                                    modifiers,
                                     click_count: 1,
                                     first_mouse: false,
                                 }),
@@ -4324,9 +4985,9 @@ fn main() {
                             dispatch_real_input(
                                 window,
                                 gpui::PlatformInput::MouseUp(MouseUpEvent {
-                                    button: MouseButton::Left,
+                                    button,
                                     position,
-                                    modifiers: gpui::Modifiers::default(),
+                                    modifiers,
                                     click_count: 1,
                                 }),
                                 cx,
@@ -4347,7 +5008,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealDown { x, y, reply } => {
@@ -4387,7 +5048,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealContext { x, y, reply } => {
@@ -4427,7 +5088,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealUp { x, y, reply } => {
@@ -4457,7 +5118,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealMove { x, y, reply } => {
@@ -4498,7 +5159,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealDrag {
@@ -4570,7 +5231,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugRealDragPath { path, reply } => {
@@ -4633,7 +5294,7 @@ fn main() {
                                     "eventsEmitted": emitted,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugResize { w, h, reply } => {
@@ -4650,7 +5311,7 @@ fn main() {
                                     "h": h,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugFullLayout { reply } => {
@@ -4666,7 +5327,7 @@ fn main() {
                                     "type": "fullLayout",
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugPerformanceHud { enabled, reply } => {
@@ -4677,7 +5338,7 @@ fn main() {
                         });
                         let _ = reply.send(serde_json::json!({ "ok": applied.is_ok() }));
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::PickPaths {
@@ -4740,7 +5401,7 @@ fn main() {
                             "focusedId": focused_id,
                         }));
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugInputState { reply } => {
@@ -4755,7 +5416,7 @@ fn main() {
                         });
                         let _ = reply.send(snapshot);
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugImeSetMarked {
@@ -4788,7 +5449,7 @@ fn main() {
                         });
                         let _ = reply.send(snapshot);
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugImeCommit { text, reply } => {
@@ -4810,7 +5471,7 @@ fn main() {
                         });
                         let _ = reply.send(snapshot);
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugImeUnmark { reply } => {
@@ -4832,7 +5493,7 @@ fn main() {
                         });
                         let _ = reply.send(snapshot);
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugAccessibilityEditInput {
@@ -4860,7 +5521,7 @@ fn main() {
                         });
                         let _ = reply.send(snapshot);
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugAccessibilitySetInputFocus {
@@ -4880,7 +5541,7 @@ fn main() {
                             "id": id,
                         }));
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugKeyPress { key, reply } => {
@@ -4920,7 +5581,7 @@ fn main() {
                             "focusedId": focused_id,
                         }));
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugRealKey { key, reply } => {
@@ -4982,7 +5643,7 @@ fn main() {
                                 "key": key,
                                 "error": "window update failed",
                             }));
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugDispatchAction { name, reply } => {
@@ -5012,7 +5673,7 @@ fn main() {
                             "pasteboard": pasteboard,
                         }));
                         if dispatched.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::DebugScrollAt {
@@ -5404,10 +6065,16 @@ fn main() {
                         let shown = window_handle
                             .update(cx, |_root, window, _cx| native_menu::show(window, menu));
                         if shown.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     Incoming::ClipboardWrite { text } => {
+                        if let Some(path) = fake_clipboard_path() {
+                            if let Err(error) = std::fs::write(&path, &text) {
+                                eprintln!("[rngpui] cannot write fake clipboard {path}: {error}");
+                            }
+                            continue;
+                        }
                         if cx
                             .update(|cx| {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -5430,7 +6097,7 @@ fn main() {
                             })
                             .is_err()
                         {
-                            break;
+                            window_gone!();
                         }
                         #[cfg(not(target_os = "macos"))]
                         {
@@ -5442,7 +6109,7 @@ fn main() {
                                 .update(cx, |_root, window, _cx| window.refresh())
                                 .is_err()
                             {
-                                break;
+                                window_gone!();
                             }
                         }
                     }
@@ -5524,7 +6191,7 @@ fn main() {
                                     "y": y,
                                 }));
                             }
-                            Err(_) => break,
+                            Err(_) => window_gone!(),
                         }
                     }
                     Incoming::DebugTap { x, y, reply } => {
@@ -5581,7 +6248,7 @@ fn main() {
                             })
                         });
                         if applied.is_err() {
-                            break;
+                            window_gone!();
                         }
                     }
                     msg => {
@@ -5633,7 +6300,7 @@ fn main() {
                                 }
                                 this.root_paint_only = pending_paint_only;
                                 if lifecycle_changed {
-                                    next_metadata.retain_native_state();
+                                    windows::retain_all_with(0, &next_metadata, cx);
                                 }
                                 let retained_at = std::time::Instant::now();
                                 // `fill_root` (parse_json_tree → note_commit) just armed any
@@ -5771,6 +6438,7 @@ fn main() {
                                 animate_ms,
                                 clear,
                             } => {
+                                crate::anim_overlay::clear_paint_only_frame();
                                 if clear {
                                     elements::clear_native_layout_override(&key);
                                 } else if let Some(animate_ms) = animate_ms {
@@ -5909,6 +6577,7 @@ fn main() {
                             | Incoming::DebugRealKey { .. }
                             | Incoming::DebugDispatchAction { .. }
                             | Incoming::DebugRealTap { .. }
+                            | Incoming::DebugRealModifiers { .. }
                             | Incoming::DebugRealScroll { .. }
                             | Incoming::DebugRealContext { .. }
                             | Incoming::DebugRealDown { .. }
@@ -5932,10 +6601,23 @@ fn main() {
                             | Incoming::RequestAttention { .. }
                             | Incoming::OpenWindow
                             | Incoming::OpenUrl { .. }
-                            | Incoming::QuickLook { .. } => unreachable!(),
+                            | Incoming::QuickLook { .. }
+                            | Incoming::WindowOpen(_)
+                            | Incoming::WindowUpdate(_)
+                            | Incoming::WindowClose { .. }
+                            | Incoming::WindowFocus { .. }
+                            | Incoming::WindowTree { .. }
+                            | Incoming::ForWindow { .. }
+                            | Incoming::DebugWindows { .. }
+                            | Incoming::DebugSystemClose { .. }
+                            | Incoming::DebugActivate { .. }
+                            | Incoming::ClipboardRead { .. } => unreachable!(),
                         });
                         if applied.is_err() {
-                            break; // view dropped
+                            window_gone!(); // view dropped
+                        }
+                        for window in extra_refresh {
+                            let _ = cx.update(|cx| windows::refresh(window, cx));
                         }
                         // One targeted repaint of OUR window per applied message. The
                         // previous `cx.refresh_windows()` on top of this refreshed EVERY
@@ -5950,12 +6632,13 @@ fn main() {
                             })
                             .is_err()
                         {
-                            break;
+                            window_gone!();
                         }
                         if drive_native_layout_animation
                             && !native_layout_driver_active.swap(true, Ordering::SeqCst)
                         {
-                            let pump = pump.clone();
+                            let pump = main_pump.clone();
+                            let window_handle = main_window_handle;
                             let active = native_layout_driver_active.clone();
                             cx.spawn(async move |cx| {
                                 let debug_native_layout =
@@ -5985,6 +6668,9 @@ fn main() {
                                         if cx.update(|cx| cx.refresh_windows()).is_err() {
                                             break 'driver;
                                         }
+                                        if windows::has_secondary() {
+                                            let _ = cx.update(windows::refresh_all_secondary);
+                                        }
                                     }
                                     if debug_native_layout {
                                         eprintln!("[native-layout] done ticks={ticks}");
@@ -6006,7 +6692,8 @@ fn main() {
                         if drive_gpui_tweens
                             && !gpui_tween_driver_active.swap(true, Ordering::SeqCst)
                         {
-                            let pump = pump.clone();
+                            let pump = main_pump.clone();
+                            let window_handle = main_window_handle;
                             let active = gpui_tween_driver_active.clone();
                             cx.spawn(async move |cx| {
                                 let paint_patch_trace =
@@ -6050,8 +6737,20 @@ fn main() {
                                         // pixels that changed. Anything else this tick — a
                                         // colour, a transform, a node with no recording —
                                         // returns false and falls through to the draw.
+                                        let secondary_owned = if windows::has_secondary() {
+                                            cx.update(windows::refresh_tween_owners)
+                                                .unwrap_or_default()
+                                        } else {
+                                            HashSet::new()
+                                        };
                                         let batch = crate::anim_overlay::take_paint_patch_batch()
-                                            .filter(|_| !paint_patch_disabled);
+                                            .filter(|_| !paint_patch_disabled)
+                                            .map(|mut moves| {
+                                                moves.retain(|(id, _)| {
+                                                    !secondary_owned.contains(id)
+                                                });
+                                                moves
+                                            });
                                         let nodes = batch.as_ref().map_or(0, |moves| moves.len());
                                         let patched = batch.is_some_and(|moves| {
                                             window_handle

@@ -12,16 +12,32 @@ export type WordContext = {
     userColor(login: string): string | undefined;
     cheermotes: CheermoteSet[];
     bits: number;
+    isKnownChatter?(login: string): boolean;
+    findAllUsernames?: boolean;
+    lowercaseDomains?: boolean;
+    zeroWidthEmotes?: boolean;
+    stackBits?: boolean;
 };
 
-type CheerState = { bitsLeft: number; hasBits: boolean };
+type CheerState = { bitsLeft: number; hasBits: boolean; stacked: boolean };
 
 const MENTION_RE = /^@(\w+)[.,!?;:]*?$/u;
+const BARE_MENTION_RE = /^(\w+)[.,!?;:]*?$/u;
 
 function tryCheer(builder: PieceBuilder, word: string, ctx: WordContext, state: CheerState): boolean {
-    if (!state.hasBits || state.bitsLeft <= 0) return false;
+    if (!state.hasBits) return false;
     const match = matchCheer(ctx.cheermotes, word);
     if (!match) return false;
+    if (ctx.stackBits) {
+        if (state.stacked) return true;
+        state.stacked = true;
+        const total = matchCheer(ctx.cheermotes, word.slice(0, word.length - String(match.amount).length) + String(ctx.bits));
+        const tier = total?.tier ?? match.tier;
+        builder.emote(tier.image, false);
+        builder.text(String(ctx.bits), tier.color as Tint);
+        return true;
+    }
+    if (state.bitsLeft <= 0) return false;
     if (match.amount > state.bitsLeft) {
         const prefixLength = word.length - String(match.amount).length;
         const reduced = word.slice(0, prefixLength) + String(match.amount - state.bitsLeft);
@@ -33,20 +49,28 @@ function tryCheer(builder: PieceBuilder, word: string, ctx: WordContext, state: 
     return true;
 }
 
-function tryMention(builder: PieceBuilder, word: string, ctx: WordContext): boolean {
-    if (!word.startsWith("@")) return false;
-    const match = MENTION_RE.exec(word);
-    if (!match) return false;
-    const username = match[1];
+function addMention(builder: PieceBuilder, word: string, username: string, mention: string, ctx: WordContext): void {
     const color = ctx.userColor(username.toLowerCase());
     const tint = (color as Tint | undefined) ?? ctx.textTint;
-    const mention = `@${username}`;
     const remainder = word.slice(mention.length);
-    builder.user(mention, username.toLowerCase(), tint, true);
+    builder.mention(mention, username.toLowerCase(), tint, ctx.textTint);
     if (remainder) {
         builder.noSpaceAfterLast();
         builder.text(remainder, ctx.textTint);
     }
+}
+
+function tryMention(builder: PieceBuilder, word: string, ctx: WordContext): boolean {
+    if (word.startsWith("@")) {
+        const match = MENTION_RE.exec(word);
+        if (!match) return false;
+        addMention(builder, word, match[1], `@${match[1]}`, ctx);
+        return true;
+    }
+    if (!ctx.findAllUsernames || !ctx.isKnownChatter) return false;
+    const bare = BARE_MENTION_RE.exec(word);
+    if (!bare || !ctx.isKnownChatter(bare[1].toLowerCase())) return false;
+    addMention(builder, word, bare[1], bare[1], ctx);
     return true;
 }
 
@@ -54,10 +78,10 @@ function addTextOrEmote(builder: PieceBuilder, word: string, ctx: WordContext, s
     if (tryCheer(builder, word, ctx, state)) return;
     const emote = ctx.lookupEmote(word);
     if (emote) {
-        builder.emote(emote, true);
+        builder.emote(emote, ctx.zeroWidthEmotes !== false);
         return;
     }
-    if (builder.link(word, ctx.textTint)) return;
+    if (builder.link(word, ctx.textTint, ctx.lowercaseDomains !== false)) return;
     if (tryMention(builder, word, ctx)) return;
     builder.appendText(word, ctx.textTint);
 }
@@ -75,7 +99,7 @@ export function addWords(
     twitchEmotes: EmoteOccurrence[],
     ctx: WordContext,
 ): void {
-    const state: CheerState = { bitsLeft: ctx.bits, hasBits: ctx.bits > 0 };
+    const state: CheerState = { bitsLeft: ctx.bits, hasBits: ctx.bits > 0, stacked: false };
     let cursor = 0;
     let emoteIndex = 0;
     for (const original of content.split(" ")) {

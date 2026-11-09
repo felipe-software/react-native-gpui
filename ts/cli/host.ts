@@ -489,6 +489,7 @@ function makeLaunchedHost({
 export async function attachHost(): Promise<AttachedHost> {
     const candidates = (listWindows() as GpuiWindow[])
         .filter((window) => window.title === "react-native-gpui" || window.rngpui === true)
+        .filter((window) => !(window as { secondary?: boolean }).secondary)
         .map((window) => ({ window, meta: ownerMetaForWindow(window) }))
         .sort((a, b) => {
             const ad = isMetaDriveable(a.meta) ? 0 : 1;
@@ -532,9 +533,98 @@ export async function attachHost(): Promise<AttachedHost> {
 export function currentWindow(servicePid: number): GpuiWindow | null {
     return (
         (listWindows() as GpuiWindow[])
-            .filter((window) => window.pid === servicePid)
+            .filter((window) => window.pid === servicePid && !(window as { secondary?: boolean }).secondary)
             .sort((a, b) => b.width * b.height - a.width * a.height)[0] ?? null
     );
+}
+
+export type ServiceWindow = {
+    id: number;
+    kind: "main" | "normal" | "dialog" | "popup";
+    title: string | null;
+    testID: string | null;
+    nodes: number;
+    framesPainted: number;
+    focusedInput: number | null;
+    bounds: { x: number; y: number; outerWidth: number; outerHeight: number; width: number; height: number; active: boolean } | null;
+};
+
+export async function listServiceWindows(host: Host): Promise<ServiceWindow[]> {
+    if (!isDriveableHost(host)) throw new Error("listing windows needs a driveable target (control socket)");
+    const listing = await host.request<{ ok: boolean; windows?: ServiceWindow[]; error?: string }>({ $cmd: "windows" });
+    if (!listing.ok || !listing.windows) throw new Error(listing.error || "windows listing failed");
+    return listing.windows;
+}
+
+export function matchServiceWindow(windows: ServiceWindow[], selector: string): ServiceWindow | null {
+    const wanted = selector.trim();
+    if (wanted === "main") return windows.find((window) => window.id === 0) ?? null;
+    if (/^\d+$/.test(wanted)) return windows.find((window) => window.id === Number(wanted)) ?? null;
+    const lower = wanted.toLowerCase();
+    return (
+        windows.find((window) => window.testID === wanted) ??
+        windows.find((window) => window.kind === lower && window.id !== 0) ??
+        windows.find((window) => (window.title ?? "").toLowerCase().includes(lower)) ??
+        null
+    );
+}
+
+const GLOBAL_COMMANDS = new Set(["windows", "frameStats", "rendererProvenance", "traceStart", "traceStop", "evalJs", "hotEval"]);
+
+export async function scopeToWindow<T extends Host>(host: T, selector: string): Promise<T> {
+    const windows = await listServiceWindows(host);
+    const target = matchServiceWindow(windows, selector);
+    if (!target) {
+        const known = windows.map((window) => `${window.id}:${window.kind}${window.testID ? `:${window.testID}` : ""}`).join(" ");
+        throw new Error(`no window matches "${selector}" (windows: ${known})`);
+    }
+    if (target.id === 0) return host;
+    const request = host.request!.bind(host);
+    const scopedRequest = <R = unknown>(cmd: object) => {
+        const name = (cmd as { $cmd?: string }).$cmd ?? "";
+        return request<R>(GLOBAL_COMMANDS.has(name) ? cmd : { ...cmd, window: target.id });
+    };
+    const bounds = target.bounds;
+    const window: GpuiWindow = {
+        ...host.window,
+        title: target.title ?? host.window.title,
+        x: bounds?.x ?? 0,
+        y: bounds?.y ?? 0,
+        width: bounds?.outerWidth ?? host.window.width,
+        height: bounds?.outerHeight ?? host.window.height,
+        bounds: { x: bounds?.x ?? 0, y: bounds?.y ?? 0, width: bounds?.outerWidth ?? 0, height: bounds?.outerHeight ?? 0 },
+    };
+    const scoped = {
+        ...host,
+        window,
+        request: scopedRequest,
+        async dump() {
+            const response = await scopedRequest<{ ok: boolean; tree?: DumpNode; error?: string }>({ $cmd: "dump" });
+            if (!response.ok || !response.tree) throw new Error(response.error || "dump failed");
+            return response.tree;
+        },
+        capture(path: string) {
+            captureServiceWindow(host, target.id, path);
+        },
+        close: () => host.close(),
+    };
+    return scoped as T;
+}
+
+function captureServiceWindow(host: Host, windowId: number, path: string) {
+    if (host.mode === "launch") {
+        const meta = readSession(host.sessionDir);
+        if (!meta.captureTriggerPath) throw new Error("this session has no capture trigger");
+        rmSync(meta.capturePath, { force: true });
+        writeFileSync(meta.captureTriggerPath, `capture window=${windowId}\n`);
+        waitForCapture(meta.capturePath, path);
+        return;
+    }
+    const record = (listWindows() as Array<GpuiWindow & { windowId?: number }>).find(
+        (window) => window.pid === host.servicePid && window.windowId === windowId,
+    );
+    if (!record) throw new Error(`window ${windowId} of pid ${host.servicePid} is not in the window registry`);
+    captureWindow(record, path);
 }
 
 function requestSocket<T>(socketPath: string, cmd: object): Promise<T> {

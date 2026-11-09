@@ -200,6 +200,13 @@ update-mode = "0.2.2-api-compatible-backports"
 #     or less are shown for 100ms, as browsers do, so a zero-delay GIF cannot spin the
 #     renderer. Static images never schedule anything. rngpui's `<Image>` gives the inner
 #     img an id keyed by its source (rust/src/elements/image.rs).
+#
+# 14. `Window::set_keep_above` (src/window.rs, `PlatformWindow::set_keep_above` with a no-op
+#     default in src/platform.rs). `<Window alwaysOnTop>` needs it and upstream has no
+#     keep-above request on Linux. X11 sends `_NET_WM_STATE_ABOVE` add/remove through the
+#     existing `set_wm_hints` (the `WmHintPropertyState::Add`/`Remove` variants were commented
+#     out). Wayland has no protocol for it and keeps the no-op; macOS sets the NSWindow level
+#     from rust/src/liquid_glass.rs instead.
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2-patched" }
 # Patched gpui-component 0.5.1 (vendored alongside gpui, same precedent). Divergences

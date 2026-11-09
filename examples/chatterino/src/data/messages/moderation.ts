@@ -47,7 +47,9 @@ function wroteSinceTimeout(login: string): (message: ChatMessage) => boolean {
 
 export type ClearChatResult = { added?: ChatMessage; replaced?: ChatMessage };
 
-export function applyClearChat(sink: MessageSink, irc: IrcMessage, fallbackTime: number): ClearChatResult {
+export type StackStyle = "stack" | "stackUntilTimeout" | "dontStack";
+
+export function applyClearChat(sink: MessageSink, irc: IrcMessage, fallbackTime: number, stackStyle: StackStyle = "stackUntilTimeout"): ClearChatResult {
     const channel = (irc.params[0] ?? "").replace(/^#/, "").toLowerCase();
     const time = messageTime(irc.tags, fallbackTime);
     const historical = "historical" in irc.tags;
@@ -67,12 +69,11 @@ export function applyClearChat(sink: MessageSink, irc: IrcMessage, fallbackTime:
     }
     const durationText = irc.tags["ban-duration"];
     const duration = durationText === undefined ? undefined : Number(durationText);
-    const previous = findStackable(
-        sink,
-        time,
-        (message) => !!message.flags.timeout && message.timeoutUser === target,
-        wroteSinceTimeout(target),
-    );
+    const stops = stackStyle === "stack" ? () => false : wroteSinceTimeout(target);
+    const previous =
+        stackStyle === "dontStack"
+            ? undefined
+            : findStackable(sink, time, (message) => !!message.flags.timeout && message.timeoutUser === target, stops);
     disableUser(sink, target);
     const message = makeTimeoutMessage(channel, target, duration, time, (previous?.count ?? 0) + 1);
     if (historical) message.flags.historical = true;
@@ -85,7 +86,7 @@ export function applyClearChat(sink: MessageSink, irc: IrcMessage, fallbackTime:
     return { added: message };
 }
 
-export function applyClearMsg(sink: MessageSink, irc: IrcMessage, fallbackTime: number): ChatMessage | undefined {
+export function applyClearMsg(sink: MessageSink, irc: IrcMessage, fallbackTime: number, lengthLimit?: number): ChatMessage | undefined {
     const targetId = irc.tags["target-msg-id"];
     if (!targetId) return undefined;
     const original = sink.findById(targetId);
@@ -95,7 +96,7 @@ export function applyClearMsg(sink: MessageSink, irc: IrcMessage, fallbackTime: 
         sink.changed(original);
     }
     const channel = (irc.params[0] ?? "").replace(/^#/, "").toLowerCase();
-    const deletion = makeDeletionMessage(channel, original, messageTime(irc.tags, fallbackTime));
+    const deletion = makeDeletionMessage(channel, original, messageTime(irc.tags, fallbackTime), lengthLimit);
     deletion.id = `deleted-${targetId}`;
     if ("historical" in irc.tags) deletion.flags.historical = true;
     if (sink.findById(deletion.id)) return undefined;

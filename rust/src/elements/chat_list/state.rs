@@ -7,7 +7,9 @@ use gpui::{Bounds, Hsla, MouseButton, Pixels, Point, SharedString};
 use super::layout::{
     FontMetrics, LayoutKey, LayoutStyle, MessageLayout, Part, Shaper, layout_message,
 };
-use super::model::{ChatElement, ChatListOp, ChatListOptions, ChatMessage, Word, split_words};
+use super::model::{
+    ChatElement, ChatListOp, ChatListOptions, ChatMessage, RevealAlign, Word, split_words,
+};
 
 pub const SCROLLBAR_WIDTH: f32 = 16.0;
 const THUMB_TRACK_INSET: f32 = 11.0;
@@ -183,6 +185,14 @@ pub struct ListState {
     pub stats: Stats,
     pub listens_press: bool,
     pub listens_hover: bool,
+    pub pending_scroll: Option<PendingScroll>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingScroll {
+    Top,
+    Message { seq: i64, align: RevealAlign },
+    Page(f32),
 }
 
 impl Default for ListState {
@@ -217,6 +227,7 @@ impl Default for ListState {
             stats: Stats::default(),
             listens_press: false,
             listens_hover: false,
+            pending_scroll: None,
         }
     }
 }
@@ -355,6 +366,58 @@ impl ListState {
                 self.hover_paused = false;
                 self.resume_override = self.pointer_inside;
                 self.unseen = 0;
+                self.pending_scroll = None;
+            }
+            ChatListOp::ScrollToTop => {
+                self.pending_scroll = Some(PendingScroll::Top);
+            }
+            ChatListOp::ScrollToMessage { id, align } => {
+                if let Some(seq) = self.ids.get(&id).copied() {
+                    self.pending_scroll = Some(PendingScroll::Message { seq, align });
+                }
+            }
+            ChatListOp::Page(direction) => {
+                self.pending_scroll = Some(PendingScroll::Page(direction));
+            }
+        }
+    }
+
+    fn resolve_pending_scroll(&mut self, pending: PendingScroll, height: f32, shaper: &Shaper) {
+        let width = self.content_width;
+        match pending {
+            PendingScroll::Top => {
+                let Some(first) = self.entries.front() else {
+                    return;
+                };
+                self.anchor = Some(Anchor {
+                    seq: first.seq,
+                    offset: 0.0,
+                });
+                self.follow = false;
+            }
+            PendingScroll::Message { seq, align } => {
+                let Some(index) = self.index_of(seq) else {
+                    return;
+                };
+                self.anchor = Some(Anchor { seq, offset: 0.0 });
+                self.follow = false;
+                let row_height = self.height_at(index, shaper, width);
+                let lift = match align {
+                    RevealAlign::Top => 0.0,
+                    RevealAlign::Center => ((height - row_height) / 2.0).max(0.0),
+                    RevealAlign::Bottom => (height - row_height).max(0.0),
+                };
+                if lift > 0.0 {
+                    self.scroll_by(lift, shaper);
+                }
+                let offset = self.anchor.map_or(0.0, |anchor| anchor.offset);
+                let at = self.anchor.and_then(|anchor| self.index_of(anchor.seq));
+                if let Some(at) = at {
+                    self.follow = self.reaches_bottom(at, offset, height, shaper, width);
+                }
+            }
+            PendingScroll::Page(direction) => {
+                self.scroll_by(-direction * height, shaper);
             }
         }
     }
@@ -524,6 +587,9 @@ impl ListState {
         self.content_width = width;
         let height = f32::from(viewport.size.height);
         let top = f32::from(viewport.origin.y);
+        if let Some(pending) = self.pending_scroll.take() {
+            self.resolve_pending_scroll(pending, height, shaper);
+        }
         let mut local = if self.following() || self.anchor.is_none() {
             self.bottom_rows(height, shaper, width)
         } else {

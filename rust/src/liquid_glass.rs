@@ -549,6 +549,31 @@ unsafe fn glass_subview(content_view: id) -> id {
     nil
 }
 
+pub fn pin_appearance(window: &mut Window) {
+    let Some(ns_view) = raw_ns_view(window) else {
+        return;
+    };
+    unsafe {
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window != nil {
+            apply_forced_appearance(ns_window);
+        }
+    }
+}
+
+pub fn set_floating_level(window: &mut Window, on_top: bool) {
+    let Some(ns_view) = raw_ns_view(window) else {
+        return;
+    };
+    unsafe {
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window != nil {
+            let level: i64 = if on_top { 3 } else { 0 };
+            let _: () = msg_send![ns_window, setLevel: level];
+        }
+    }
+}
+
 pub fn gpui_ns_view_ptr(window: &mut Window) -> Option<usize> {
     raw_ns_view(window).map(|view| view as usize)
 }

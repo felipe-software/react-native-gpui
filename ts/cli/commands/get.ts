@@ -4,7 +4,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isDriveableHost, type AttachedHost, type DumpNode, type LaunchedHost } from "../host";
+import { isDriveableHost, listServiceWindows, type AttachedHost, type DumpNode, type LaunchedHost } from "../host";
 import { isVisible, nodeAtPoint, parsePoint, resolve, walk } from "../selectors";
 import { averageColor, dominantColor, pixelAt } from "../../scripts/pixel.mjs";
 import { readPng } from "../../scripts/png.mjs";
@@ -182,6 +182,23 @@ function formatStateStyle(style: Record<string, unknown>): string {
 }
 
 export async function runGet(host: Host, sub: string, args: string[], json: boolean): Promise<number> {
+    if (sub === "windows") {
+        const windows = await listServiceWindows(host);
+        out(
+            json,
+            () => {
+                for (const window of windows) {
+                    const b = window.bounds;
+                    const geometry = b ? `${b.width.toFixed(0)}x${b.height.toFixed(0)} at ${b.x.toFixed(0)},${b.y.toFixed(0)}${b.active ? " active" : ""}` : "—";
+                    const name = window.testID ? ` ${window.testID}` : "";
+                    const title = window.title ? ` "${window.title}"` : "";
+                    console.log(`  ${window.id} ${window.kind}${name}${title} ${geometry} nodes=${window.nodes} frames=${window.framesPainted}`);
+                }
+            },
+            windows,
+        );
+        return 0;
+    }
     if (sub === "provenance") {
         if (!isDriveableHost(host)) {
             console.error("  get provenance needs a driveable target (control socket)");

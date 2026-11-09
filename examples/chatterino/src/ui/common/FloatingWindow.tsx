@@ -1,6 +1,8 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useContext, useRef, useState, type ReactNode } from "react";
 import { Svg, Text, View, useWindowDimensions, type MouseResponderEvent } from "react-native-gpui";
 import { ICONS } from "../icons";
+import { OverlayWindowContext } from "../overlays/overlayWindows";
+import { OverlayWindowFrame } from "../overlays/OverlayWindowFrame";
 import { useApp } from "../state/AppContext";
 import { chromeColors } from "../theme";
 
@@ -36,6 +38,26 @@ export function FloatingWindow({ testID, title, width, height, x, y, modal, fram
     const left = clamp(initialX + offset.x, 0, Math.max(0, screen.width - width));
     const top = clamp(initialY + offset.y, 0, Math.max(0, screen.height - height));
     const hasBackdrop = modal || !!onBackdropPress;
+    const overlayWindow = useContext(OverlayWindowContext);
+
+    if (overlayWindow) {
+        return (
+            <OverlayWindowFrame
+                window={overlayWindow}
+                testID={testID}
+                title={title}
+                width={width}
+                height={height}
+                x={x}
+                y={y}
+                frameless={frameless}
+                onClose={onClose}
+                onBackdropPress={onBackdropPress}
+            >
+                {children}
+            </OverlayWindowFrame>
+        );
+    }
 
     const startMove = (event: MouseResponderEvent) => {
         if (event.nativeEvent.pressDrag) return;
@@ -58,6 +80,7 @@ export function FloatingWindow({ testID, title, width, height, x, y, modal, fram
             ) : null}
             <View
                 testID={testID}
+                onMouseDown={() => undefined}
                 style={{
                     position: "absolute",
                     left,

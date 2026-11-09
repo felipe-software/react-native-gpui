@@ -1358,6 +1358,8 @@ fn is_discrete_input_event(arg: &str) -> bool {
         || arg.contains("\"event\":\"pressOut\"")
         || arg.contains("\"event\":\"press\"")
         || arg.contains("\"event\":\"click\"")
+        || arg.contains("\"event\":\"auxClick\"")
+        || arg.contains("\"event\":\"keyUp\"")
         || arg.contains("\"event\":\"changeText\"")
         || arg.contains("\"event\":\"keyPress\"")
         || arg.contains("\"event\":\"submit\"")
@@ -1456,15 +1458,33 @@ fn coalesce_latest(calls: &mut Vec<HostCall>) {
 /// websocket frames (terminal output) no longer delays the hover highlight. Kept FFI-free so
 /// the ordering + coalescing is unit-testable.
 fn plan_dispatch(batch: Vec<HostCall>) -> Vec<HostCall> {
+    let classes: Vec<QueueClass> = batch
+        .iter()
+        .map(|call| queue_class(call.func, &call.arg))
+        .collect();
+    let last_release = batch.iter().zip(&classes).rposition(|(call, class)| {
+        *class == QueueClass::DiscreteInput && is_pointer_release_event(&call.arg)
+    });
     let mut input = Vec::new();
+    let mut moves_before_release = Vec::new();
     let mut pseudo = Vec::new();
     let mut async_completions = Vec::new();
     let mut rest = Vec::new();
-    for call in batch {
-        match queue_class(call.func, &call.arg) {
-            QueueClass::DiscreteInput => input.push(call),
+    for (index, (call, class)) in batch.into_iter().zip(classes).enumerate() {
+        let precedes_release = last_release.is_some_and(|release| index < release);
+        match class {
+            QueueClass::DiscreteInput => {
+                if is_pointer_release_event(&call.arg) {
+                    coalesce_latest(&mut moves_before_release);
+                    input.append(&mut moves_before_release);
+                }
+                input.push(call);
+            }
             QueueClass::Pseudo => pseudo.push(call),
             QueueClass::AsyncCompletion => async_completions.push(call),
+            QueueClass::Other if precedes_release && is_pointer_move_event(&call.arg) => {
+                moves_before_release.push(call)
+            }
             QueueClass::Other => rest.push(call),
         }
     }
@@ -1475,6 +1495,24 @@ fn plan_dispatch(batch: Vec<HostCall>) -> Vec<HostCall> {
     plan.extend(async_completions);
     plan.extend(rest);
     plan
+}
+
+fn is_pointer_move_event(arg: &str) -> bool {
+    arg.contains("\"type\":\"event\"")
+        && (arg.contains("\"event\":\"mouseMove\"")
+            || arg.contains("\"event\":\"pointerMove\"")
+            || arg.contains("\"event\":\"touchMove\"")
+            || arg.contains("\"event\":\"responderMove\""))
+}
+
+fn is_pointer_release_event(arg: &str) -> bool {
+    arg.contains("\"event\":\"mouseUp\"")
+        || arg.contains("\"event\":\"touchEnd\"")
+        || arg.contains("\"event\":\"responderRelease\"")
+        || arg.contains("\"event\":\"responderEnd\"")
+        || arg.contains("\"event\":\"pressOut\"")
+        || arg.contains("\"event\":\"press\"")
+        || arg.contains("\"event\":\"click\"")
 }
 
 fn dispatch_coalesced(rt: *mut c_void, batch: Vec<HostCall>) {
@@ -1764,6 +1802,47 @@ mod tests {
             plan,
             vec!["mouseDown", "pseudo", "__rngpui_wsEvent", "mouseMove"]
         );
+    }
+
+    #[test]
+    fn pointer_moves_before_a_release_are_delivered_first() {
+        let batch = vec![
+            call(
+                "__rngpui_onHostEvent",
+                r#"{"type":"event","id":1,"event":"mouseDown"}"#,
+            ),
+            call(
+                "__rngpui_onHostEvent",
+                r#"{"type":"event","id":1,"event":"mouseMove","pageX":10}"#,
+            ),
+            call("__rngpui_wsEvent", r#"{"event":"message"}"#),
+            call(
+                "__rngpui_onHostEvent",
+                r#"{"type":"event","id":1,"event":"mouseMove","pageX":20}"#,
+            ),
+            call(
+                "__rngpui_onHostEvent",
+                r#"{"type":"event","id":1,"event":"mouseUp","pageX":20}"#,
+            ),
+            call(
+                "__rngpui_onHostEvent",
+                r#"{"type":"event","id":1,"event":"mouseMove","pageX":30}"#,
+            ),
+        ];
+        let plan = plan_dispatch(batch);
+        let labels: Vec<String> = plan.iter().map(label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "mouseDown",
+                "mouseMove",
+                "mouseUp",
+                "__rngpui_wsEvent",
+                "mouseMove"
+            ]
+        );
+        assert!(plan[1].arg.contains("\"pageX\":20"));
+        assert!(plan[4].arg.contains("\"pageX\":30"));
     }
 
     #[test]

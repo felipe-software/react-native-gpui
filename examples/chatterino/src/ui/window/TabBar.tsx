@@ -7,7 +7,7 @@ import { tabTitle } from "../layout/tabs";
 import { splitLeaves } from "../layout/tree";
 import { useApp } from "../state/AppContext";
 import { hitAreas } from "../state/hitAreas";
-import { MENTIONS_CHANNEL } from "../state/ids";
+import { isSpecialChannel } from "../state/specialChannels";
 import type { MenuEntry } from "../state/overlays";
 import { useStore } from "../state/useStore";
 import type { TabState } from "../theme";
@@ -25,7 +25,7 @@ export function TabBar({ layout }: { layout: WindowLayout }) {
     const accounts = useStore(core.accounts);
 
     const displayName = (channel: string) => {
-        if (channel === MENTIONS_CHANNEL) return "/mentions";
+        if (isSpecialChannel(channel)) return channel;
         return infos[channel]?.displayName ?? channel;
     };
     const titles: Record<string, string> = {};

@@ -174,7 +174,7 @@ fn hovered_after_layout(list: &mut ListState, id: u64, pointer: Point<Pixels>, i
         _ => true,
     };
     if changed {
-        events::emit_hover(id, list, next.as_ref());
+        events::emit_hover(id, list, next.as_ref(), Some(pointer));
         list.hovered = next;
     }
 }
@@ -219,9 +219,13 @@ impl Element for ReactChatListElement {
             return None;
         }
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let pointer_span =
-            crate::elements::div::open_pointer_span(hitbox.id, self.element.global_id, false);
-        crate::elements::div::close_pointer_span(pointer_span);
+        let pointer_span = crate::elements::div::open_pointer_span(
+            window,
+            hitbox.id,
+            self.element.global_id,
+            false,
+        );
+        crate::elements::div::close_pointer_span(window, pointer_span);
 
         let options = self.options();
         let palette = Palette::resolve(&options, &self.element);
@@ -802,7 +806,15 @@ fn handle_mouse_down(
             list.selection = selection;
         }
         if !is_left {
-            events::emit_press(id, list, event.button, event.position, target.as_ref(), seq);
+            events::emit_press(
+                id,
+                list,
+                event.button,
+                event.position,
+                target.as_ref(),
+                seq,
+                event.modifiers,
+            );
             return true;
         }
         list.gesture = Some(Gesture::Press {
@@ -813,7 +825,7 @@ fn handle_mouse_down(
             seq,
         });
         if list.hovered.take().is_some() {
-            events::emit_hover(id, list, None);
+            events::emit_hover(id, list, None, Some(event.position));
         }
         true
     })
@@ -950,7 +962,7 @@ fn handle_mouse_move(id: u64, event: &MouseMoveEvent, inside: bool, window: &Win
             _ => true,
         };
         if hover_changed {
-            events::emit_hover(id, list, next.as_ref());
+            events::emit_hover(id, list, next.as_ref(), Some(event.position));
             list.hovered = next;
             changed = true;
         }
@@ -997,7 +1009,15 @@ fn handle_mouse_up(id: u64, event: &MouseUpEvent) -> bool {
                     list.selection = None;
                 }
                 if distance(origin, event.position) <= CLICK_SLOP {
-                    events::emit_press(id, list, button, event.position, target.as_ref(), seq);
+                    events::emit_press(
+                        id,
+                        list,
+                        button,
+                        event.position,
+                        target.as_ref(),
+                        seq,
+                        event.modifiers,
+                    );
                 }
                 true
             }
@@ -1029,7 +1049,7 @@ fn handle_pointer_left(id: u64) -> bool {
             changed = true;
         }
         if list.hovered.take().is_some() {
-            events::emit_hover(id, list, None);
+            events::emit_hover(id, list, None, None);
             changed = true;
         }
         changed

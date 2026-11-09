@@ -84,6 +84,9 @@ export type {
     KeyboardAvoidingViewProps,
     ActivityIndicatorProps,
 } from "./components";
+export { Window, type WindowProps, type WindowHandle, type WindowCloseEvent } from "./Window";
+export type { WindowCloseReason, WindowKind, WindowPosition } from "./window-host";
+export { useAppState, useWindowFocused, type AppStateStatus, type AppStateEventType, type WindowFocusEvent } from "./app-state";
 export { ChatList } from "./ChatList";
 export type {
     ChatListBadgeElement,
@@ -95,6 +98,7 @@ export type {
     ChatListMessagePatch,
     ChatListPressEvent,
     ChatListProps,
+    ChatListRevealAlign,
     ChatListScrollState,
     ChatListTargetKind,
     ChatListTextElement,
@@ -119,6 +123,7 @@ export type {
     MouseResponderEvent,
     NativeResizeEdge,
     NativeResizeSpec,
+    KeyboardKeyEvent,
 } from "./types";
 export {
     LiquidGlassBackground,

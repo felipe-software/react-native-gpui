@@ -4,14 +4,22 @@ export type EmoteOccurrence = { start: number; end: number; id: string; name: st
 
 type CompiledPhrase = { phrase: IgnoredPhrase; regex: RegExp | undefined };
 
+export type IgnoreViewer = { isModerator: boolean; isBroadcaster: boolean };
+
 export type IgnoreFilter = {
-    isIgnoredUser(login: string): boolean;
+    isIgnoredUser(login: string, viewer?: IgnoreViewer): boolean;
     isBlocked(content: string): boolean;
     replace(content: string, emotes: EmoteOccurrence[]): { content: string; emotes: EmoteOccurrence[] };
 };
 
+export const DEFAULT_IGNORE_REPLACEMENT = "***";
+
 function escapeRegex(text: string): string {
     return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function isBlockPhrase(phrase: IgnoredPhrase): boolean {
+    return phrase.isBlock ?? phrase.replaceWith === undefined;
 }
 
 function compile(phrase: IgnoredPhrase): CompiledPhrase {
@@ -75,13 +83,25 @@ function replaceOne(
     return { content: output, emotes: kept.map((emote) => shiftEmote(emote, ranges)) };
 }
 
-export function buildIgnoreFilter(settings: Settings): IgnoreFilter {
-    const users = new Set(settings.ignoredUsers.map((login) => login.toLowerCase()));
+function blockedVisible(settings: Settings, viewer: IgnoreViewer | undefined): boolean {
+    if (!viewer) return false;
+    if (settings.showBlockedUsersMessages === "moderator") return viewer.isModerator || viewer.isBroadcaster;
+    if (settings.showBlockedUsersMessages === "broadcaster") return viewer.isBroadcaster;
+    return false;
+}
+
+export function buildIgnoreFilter(settings: Settings, twitchBlocks: readonly string[] = []): IgnoreFilter {
+    const local = new Set(settings.ignoredUsers.map((login) => login.toLowerCase()));
+    const blocked = new Set(settings.enableTwitchBlockedUsers ? twitchBlocks.map((login) => login.toLowerCase()) : []);
     const compiled = settings.ignoredPhrases.map(compile);
-    const blockers = compiled.filter((entry) => entry.phrase.replaceWith === undefined);
-    const replacers = compiled.filter((entry) => entry.phrase.replaceWith !== undefined);
+    const blockers = compiled.filter((entry) => isBlockPhrase(entry.phrase));
+    const replacers = compiled.filter((entry) => !isBlockPhrase(entry.phrase));
     return {
-        isIgnoredUser: (login) => users.has(login.toLowerCase()),
+        isIgnoredUser(login, viewer) {
+            const lower = login.toLowerCase();
+            const isBlocked = local.has(lower) || blocked.has(lower);
+            return isBlocked && !blockedVisible(settings, viewer);
+        },
         isBlocked: (content) => content.length > 0 && blockers.some((entry) => matches(entry, content)),
         replace(content, emotes) {
             let state = { content, emotes };

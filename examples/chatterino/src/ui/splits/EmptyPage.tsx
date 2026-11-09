@@ -2,7 +2,7 @@ import { Text, View } from "react-native-gpui";
 import type { Fonts } from "../fonts";
 import type { Theme } from "../theme";
 
-const HINT = "After adding, drag a split by its header to move it.";
+const HINT = "After adding hold <Ctrl+Alt> to move or split it.";
 
 type Props = { theme: Theme; fonts: Fonts; manyTabs: boolean; testID: string; onPress: () => void };
 

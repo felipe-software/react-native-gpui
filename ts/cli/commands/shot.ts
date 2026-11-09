@@ -12,7 +12,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import type { DumpNode, Host, LaunchedHost } from "../host";
-import { attachSession, launchHost } from "../host";
+import { attachSession, launchHost, scopeToWindow } from "../host";
 import { isVisible, resolve as resolveSelector, walk } from "../selectors";
 import { averageColor, dominantColor } from "../../scripts/pixel.mjs";
 import { decodePng, encodePng, readPng } from "../../scripts/png.mjs";
@@ -29,6 +29,7 @@ export type ShotFlags = {
     bundle?: string;
     launch?: string;
     keep: boolean;
+    window?: string;
 };
 
 // the team-machine app paints an empty "connecting…" shell without data; the fixture
@@ -187,7 +188,8 @@ function captureShot(host: Host, flags: ShotFlags, dump: DumpNode, session: stri
 export async function runShot(flags: ShotFlags): Promise<number> {
     // reshot path: a kept session is already alive — re-capture in sub-second time.
     if (flags.session) {
-        const host = await attachSession(flags.session);
+        const session = await attachSession(flags.session);
+        const host = flags.window ? await scopeToWindow(session, flags.window) : session;
         try {
             const dump = await host.dump();
             printShot(captureShot(host, flags, dump, flags.session), flags.json);

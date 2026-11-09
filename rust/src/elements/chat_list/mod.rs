@@ -33,3 +33,7 @@ pub fn clear_selection() -> bool {
 pub fn selection_changed_at() -> Option<std::time::Instant> {
     state::selection_changed_at()
 }
+
+pub fn forget_window(window: u64) {
+    images::forget_window(window);
+}

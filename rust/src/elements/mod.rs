@@ -16,8 +16,8 @@ pub use diff::{DiffPayload, ReactDiffElement, retain_diff_state, scroll_diff_by}
 #[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use div::{
     ReactDivElement, animate_native_layout_override, begin_pointer_frame, claim_native_scroll,
-    clear_native_layout_override, ease_out_cubic, finish_pointer_gesture, lerp,
-    listens_pointer_down, native_layout_has_animations, native_resize_active,
+    clear_native_layout_override, ease_out_cubic, finish_pointer_gesture, forget_pointer_window,
+    lerp, listens_pointer_down, native_layout_has_animations, native_resize_active,
     retain_native_layout_keys, retain_pointer_state, retain_scroll_state, scroll_to, scroll_to_end,
     set_native_layout_override, stacked_child_indices_for, synth_drag_end, synth_drag_move,
     synth_drag_start, synth_tap,
@@ -310,6 +310,7 @@ pub const POINTER_EVENTS: &[&str] = &[
     "pressIn",
     "pressOut",
     "drop",
+    "auxClick",
 ];
 
 impl ReactElement {
@@ -483,6 +484,8 @@ fn event_bit(name: &str) -> Option<u32> {
         "showMore" => 37,
         "lineClick" => 38,
         "drop" => 39,
+        "auxClick" => 40,
+        "keyUp" => 41,
         _ => return None,
     })
 }

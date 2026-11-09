@@ -153,6 +153,19 @@ pub enum ChatListOp {
     Update(Vec<ChatMessagePatch>),
     Clear,
     ScrollToBottom,
+    ScrollToTop,
+    ScrollToMessage {
+        id: SharedString,
+        align: RevealAlign,
+    },
+    Page(f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RevealAlign {
+    Top,
+    Center,
+    Bottom,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -270,6 +283,22 @@ pub fn parse_command(value: &Value) -> Option<(u64, ChatListOp)> {
         "update" => ChatListOp::Update(parse_patches(value.get("patches"))),
         "clear" => ChatListOp::Clear,
         "scrollToBottom" => ChatListOp::ScrollToBottom,
+        "scrollToTop" => ChatListOp::ScrollToTop,
+        "scrollToMessage" => ChatListOp::ScrollToMessage {
+            id: SharedString::from(value.get("messageId").and_then(Value::as_str)?.to_string()),
+            align: match value.get("align").and_then(Value::as_str) {
+                Some("top") => RevealAlign::Top,
+                Some("bottom") => RevealAlign::Bottom,
+                _ => RevealAlign::Center,
+            },
+        },
+        "page" => {
+            let direction = value
+                .get("direction")
+                .and_then(Value::as_f64)
+                .unwrap_or(1.0);
+            ChatListOp::Page(if direction < 0.0 { -1.0 } else { 1.0 })
+        }
         _ => return None,
     };
     Some((id, op))

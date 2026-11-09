@@ -63,6 +63,8 @@ export interface Container {
     width: number;
     height: number;
     children: Array<Instance | TextInstance>;
+    windowId?: number;
+    rootGlobalId?: number;
 }
 
 export type ReconcilerCommitDiagnostics = {
@@ -75,7 +77,36 @@ export type ReconcilerCommitDiagnostics = {
 };
 
 let commit: ((tree: SerializedNode, diagnostics?: ReconcilerCommitDiagnostics) => void) | null = null;
-let currentContainer: Container | null = null;
+let mainContainer: Container | null = null;
+
+type WindowChannel = { container: Container; push: (tree: SerializedNode) => void };
+const windowChannels = new Map<number, WindowChannel>();
+
+export function createWindowContainer(windowId: number, width: number, height: number): Container {
+    return { rootID: -windowId, width, height, children: [], windowId, rootGlobalId: genId() };
+}
+
+export function registerWindowContainer(container: Container, push: (tree: SerializedNode) => void) {
+    if (container.windowId === undefined) return;
+    windowChannels.set(container.windowId, { container, push });
+}
+
+export function unregisterWindowContainer(windowId: number) {
+    windowChannels.delete(windowId);
+}
+
+export function pushWindowTree(windowId: number) {
+    const channel = windowChannels.get(windowId);
+    if (channel) channel.push(serializeContainer(channel.container));
+}
+
+function pushWindowTrees() {
+    for (const channel of windowChannels.values()) channel.push(serializeContainer(channel.container));
+}
+
+export function windowContainers(): Container[] {
+    return [...windowChannels.values()].map((channel) => channel.container);
+}
 const measuredIds = new Set<number>();
 const layouts = new Map<number, LayoutRect>();
 const instances = new Map<number, Instance>();
@@ -325,6 +356,8 @@ const PROP_TO_EVENT: Record<string, string> = {
     onShowMore: "showMore",
     onLineClick: "lineClick",
     onDrop: "drop",
+    onKeyUp: "keyUp",
+    onAuxClick: "auxClick",
     onChatListPress: "chatListPress",
     onChatListHover: "chatListHover",
     onChatListScroll: "chatListScroll",
@@ -378,9 +411,10 @@ function chainHandler(first: Function | undefined, next: Function) {
 // native signal changes a node's serialized output (e.g. a measured layout grants the
 // 'layout' event). hover/press no longer take this path; they're resolved natively in the host.
 function requestRecommit() {
-    if (!commit || !currentContainer) return;
-    const tree = serializeContainer(currentContainer);
+    if (!commit || !mainContainer) return;
+    const tree = serializeContainer(mainContainer);
     commit(tree, { mutationMs: 0, ...lastSerializeDiagnostics });
+    pushWindowTrees();
 }
 
 /** The platform driver opts a node into (or out of) the renderer→JS pseudo lane by
@@ -476,6 +510,7 @@ export function dispatchEvent(
     else if (event === "message") result = fn({ nativeEvent: { data: payload.value ?? "" } });
     else if (event === "layout") result = fn({ nativeEvent: { layout: payload.layout } });
     else if (event === "keyPress") result = fn(createKeyPressEvent(payload));
+    else if (event === "keyUp") result = fn(createKeyPressEvent(payload, "keyUp"));
     else if (event === "submit") result = fn(createSubmitEvent(payload.value ?? ""));
     else if (event === "terminalText") result = fn(payload.value ?? "");
     else if (event === "drop") {
@@ -809,15 +844,18 @@ function createValueEvent(
     };
 }
 
-function createKeyPressEvent(payload: {
-    key?: string;
-    shiftKey?: boolean;
-    ctrlKey?: boolean;
-    altKey?: boolean;
-    metaKey?: boolean;
-    isComposing?: boolean;
-}) {
-    const event = createEvent("keyPress", payload);
+function createKeyPressEvent(
+    payload: {
+        key?: string;
+        shiftKey?: boolean;
+        ctrlKey?: boolean;
+        altKey?: boolean;
+        metaKey?: boolean;
+        isComposing?: boolean;
+    },
+    type = "keyPress",
+) {
+    const event = createEvent(type, payload);
     event.key = payload.key;
     event.shiftKey = !!payload.shiftKey;
     event.ctrlKey = !!payload.ctrlKey;
@@ -1144,6 +1182,16 @@ function collectPortals(node: Instance | TextInstance, byHost: Map<string, Insta
     for (const child of node.children) collectPortals(child, byHost);
 }
 
+const NO_PRESS_DRAG_GROUP = "rngpui:no-press-drag";
+
+function pressDragGroup(props: Record<string, unknown>, inherited: string | undefined): string | undefined {
+    const explicit = stringProp(props, "nativeListGroup");
+    if (explicit !== undefined) return explicit;
+    if (props.nativePressDrag === false) return NO_PRESS_DRAG_GROUP;
+    if (props.nativePressDrag === true && inherited === NO_PRESS_DRAG_GROUP) return undefined;
+    return inherited;
+}
+
 function serializeChildren(
     children: Array<Instance | TextInstance>,
     context: PortalContext,
@@ -1187,7 +1235,7 @@ function serialize(inst: Instance | TextInstance, context: PortalContext, inheri
     const previousCached = inst.cached;
 
     const props = inst.props;
-    const listGroup = stringProp(props, "nativeListGroup") ?? inheritedListGroup;
+    const listGroup = pressDragGroup(props, inheritedListGroup);
     if (SERIALIZE_TRACE) {
         const g = listGroup ?? "(none)";
         serMissByGroup[g] = (serMissByGroup[g] ?? 0) + 1;
@@ -1479,7 +1527,6 @@ function imageSource(source: unknown): string | undefined {
 
 export function serializeContainer(c: Container): SerializedNode {
     const startedAt = TRACK_COMMIT ? performance.now() : 0;
-    currentContainer = c;
     // commitUpdate/createInstance fire during the React commit phase BEFORE this
     // serialize runs, so capture them now, then reset for the next commit.
     const updThisCommit = commitUpdates;
@@ -1499,7 +1546,7 @@ export function serializeContainer(c: Container): SerializedNode {
     // id 0 is reserved for the window root, so it never collides with element ids
     // (genId starts at 1) — keeps scroll/input/webview maps keyed cleanly.
     const root = {
-        globalId: 0,
+        globalId: c.rootGlobalId ?? 0,
         type: "div",
         style: { width: c.width, height: c.height, flexDirection: "column", position: "relative" },
         children: serializeChildren(c.children, context),
@@ -1652,6 +1699,7 @@ const hostConfig: any = {
     },
     resetAfterCommit(container: Container) {
         if (!commit) return;
+        mainContainer = container;
         const serializeStartedAt = TRACK_COMMIT ? performance.now() : 0;
         const tree = serializeContainer(container);
         commit(tree, TRACK_COMMIT
@@ -1660,6 +1708,7 @@ const hostConfig: any = {
                   ...lastSerializeDiagnostics,
               }
             : undefined);
+        if (windowChannels.size > 0) pushWindowTrees();
     },
     preparePortalMount: () => {},
     clearContainer(container: Container) {

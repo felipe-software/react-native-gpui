@@ -49,6 +49,13 @@ pub fn republish(window: &Window) {
     }
 }
 
+fn owner_name() -> String {
+    std::env::var("RNGPUI_APP_NAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "rngpui-service".to_string())
+}
+
 fn write_record(window: &Window) {
     let title = TITLE
         .get()
@@ -57,10 +64,7 @@ fn write_record(window: &Window) {
     let bounds = window.bounds();
     let viewport = window.viewport_size();
     let pid = std::process::id();
-    let owner = std::env::var("RNGPUI_APP_NAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "rngpui-service".to_string());
+    let owner = owner_name();
     let record = serde_json::json!({
         "id": pid,
         "window_id": pid,
@@ -78,7 +82,52 @@ fn write_record(window: &Window) {
         "capture": capture_enabled(),
         "rngpui": true,
     });
-    let path = record_path();
+    write_json(record_path(), &record);
+}
+
+fn secondary_record_path(window_id: u64) -> PathBuf {
+    directory().join(format!("{}.w{window_id}.json", std::process::id()))
+}
+
+pub fn secondary_capture_request_path(window_id: u64) -> PathBuf {
+    directory().join(format!("{}.w{window_id}.capture", std::process::id()))
+}
+
+pub fn publish_secondary(window_id: u64, window: &Window, title: &str, kind: &str) {
+    let bounds = window.bounds();
+    let viewport = window.viewport_size();
+    let pid = std::process::id();
+    let owner = owner_name();
+    let record = serde_json::json!({
+        "id": pid,
+        "window_id": pid,
+        "windowId": window_id,
+        "secondary": true,
+        "kind": kind,
+        "pid": pid,
+        "owner": owner,
+        "app_name": owner,
+        "title": title,
+        "layer": 0,
+        "x": f32::from(bounds.origin.x),
+        "y": f32::from(bounds.origin.y),
+        "width": f32::from(viewport.width),
+        "height": f32::from(viewport.height),
+        "alpha": 1.0,
+        "display": crate::linux_display::backend_name(),
+        "capture": capture_enabled(),
+        "capture_request": secondary_capture_request_path(window_id),
+        "rngpui": true,
+    });
+    write_json(secondary_record_path(window_id), &record);
+}
+
+pub fn remove_secondary(window_id: u64) {
+    let _ = std::fs::remove_file(secondary_record_path(window_id));
+    let _ = std::fs::remove_file(secondary_capture_request_path(window_id));
+}
+
+fn write_json(path: PathBuf, record: &serde_json::Value) {
     let staging = path.with_extension("json.staging");
     let written = std::fs::create_dir_all(directory())
         .and_then(|()| std::fs::write(&staging, record.to_string()))
@@ -94,4 +143,12 @@ fn write_record(window: &Window) {
 pub fn remove() {
     let _ = std::fs::remove_file(record_path());
     let _ = std::fs::remove_file(capture_request_path());
+    let prefix = format!("{}.w", std::process::id());
+    if let Ok(entries) = std::fs::read_dir(directory()) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }

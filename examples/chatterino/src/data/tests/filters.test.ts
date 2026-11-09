@@ -42,6 +42,35 @@ describe("highlights", () => {
         const checker = buildHighlightChecker(settings, undefined);
         expect(checker.check({ ...input("x"), isSubscription: true })).toMatchObject({ color: "#c466ff64", showInMentions: false });
     });
+
+    test("badge highlights match a badge name or an exact version", () => {
+        const checker = buildHighlightChecker(
+            {
+                ...settings,
+                highlightBadges: [
+                    { name: "subscriber/12", displayName: "Subscriber 1 year", showInMentions: true, alert: false, playSound: false, color: "#11111111" },
+                    { name: "vip,moderator", displayName: "VIP or mod", showInMentions: false, alert: true, playSound: false },
+                ],
+            },
+            undefined,
+        );
+        expect(checker.check({ ...input("x"), badges: [{ key: "subscriber", value: "12" }] })).toMatchObject({ color: "#11111111", showInMentions: true });
+        expect(checker.check({ ...input("x"), badges: [{ key: "subscriber", value: "6" }] })).toBeUndefined();
+        expect(checker.check({ ...input("x"), badges: [{ key: "moderator", value: "1" }] })).toMatchObject({ color: "#7f3f497f", alert: true });
+    });
+
+    test("blacklisted users never highlight, received whispers use the whisper highlight", () => {
+        const checker = buildHighlightChecker(
+            { ...settings, blacklistedUsers: [{ pattern: "^bot_", isRegex: true }, { pattern: "Nightbot", isRegex: false }] },
+            "forsen",
+        );
+        expect(checker.check(input("hi forsen", "bot_one"))).toBeUndefined();
+        expect(checker.check(input("hi forsen", "nightbot"))).toBeUndefined();
+        expect(checker.check(input("hi forsen", "someone"))).toMatchObject({ color: "#7f3f497f" });
+        expect(checker.check({ ...input("psst"), isReceivedWhisper: true })).toMatchObject({ color: "#7f3f497f", showInMentions: false });
+        const noWhispers = buildHighlightChecker({ ...settings, enableWhisperHighlight: false }, undefined);
+        expect(noWhispers.check({ ...input("psst"), isReceivedWhisper: true })).toBeUndefined();
+    });
 });
 
 describe("ignores", () => {
