@@ -841,13 +841,22 @@ impl PlatformWindow for WaylandWindow {
     fn resize(&mut self, size: Size<Pixels>) {
         let state = self.borrow();
         let state_ptr = self.0.clone();
-        let dp_size = size.to_device_pixels(self.scale_factor());
+        let window_geometry = inset_by_tiling(
+            Bounds {
+                origin: Point::default(),
+                size,
+            },
+            state.inset(),
+            state.tiling,
+        )
+        .map(|v| v.0 as i32)
+        .map_size(|v| if v <= 0 { 1 } else { v });
 
         state.xdg_surface.set_window_geometry(
-            state.bounds.origin.x.0 as i32,
-            state.bounds.origin.y.0 as i32,
-            dp_size.width.0,
-            dp_size.height.0,
+            window_geometry.origin.x,
+            window_geometry.origin.y,
+            window_geometry.size.width,
+            window_geometry.size.height,
         );
 
         state

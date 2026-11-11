@@ -62,6 +62,17 @@ pub fn resize(width: f32, height: f32) {
     emit_value(json!({ "type": "resize", "width": width, "height": height }));
 }
 
+pub fn window_frame(x: f32, y: f32, width: f32, height: f32, maximized: bool) {
+    emit_value(json!({
+        "type": "windowFrame",
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "maximized": maximized,
+    }));
+}
+
 /// The system light/dark appearance changed (or the initial value emitted when the
 /// window opens). JS updates its `Appearance` source-of-truth and re-themes the tree.
 pub fn appearance(scheme: &str) {

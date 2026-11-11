@@ -132,6 +132,7 @@ export type {
 
 // dimensions + platform APIs
 export { Dimensions, type ScaledSize } from "./Dimensions";
+export { MainWindow, type WindowFrame, type WindowFrameUpdate } from "./window-frame";
 export {
     useWindowDimensions,
     Platform,
@@ -171,9 +172,11 @@ export {
     Notifications,
     Sound,
     Processes,
+    Files,
     LocalStorage,
     getRandomValues,
     randomUUID,
+    type KnownDirectories,
     type NotificationOptions,
     type SoundOptions,
     type SoundSource,

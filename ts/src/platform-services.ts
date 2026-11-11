@@ -68,6 +68,27 @@ export const Processes = {
     },
 };
 
+export type KnownDirectories = {
+    home: string | null;
+    data: string | null;
+    config: string | null;
+};
+
+export const Files = {
+    isAvailable(): boolean {
+        return hasPlatformHost();
+    },
+    readText(path: string): Promise<string | null> {
+        if (typeof path !== "string" || path.trim() === "") {
+            return Promise.reject(new TypeError("Files.readText needs a path"));
+        }
+        return platformRequest<string | null>("files.readText", { path });
+    },
+    knownDirectories(): Promise<KnownDirectories> {
+        return platformRequest<KnownDirectories>("files.dirs", null);
+    },
+};
+
 export const LocalStorage = {
     isPersistent(): boolean {
         return globalThis.__rngpui_storageInfo?.persistent === true;

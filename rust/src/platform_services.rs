@@ -46,6 +46,8 @@ fn dispatch(op: &str, args: Value) -> Result<Value, String> {
         "sound.play" => crate::sound::play(args).map(|()| Value::Null),
         "processes.findRunning" => crate::processes::find_running(args).map(|names| json!(names)),
         "storage.flush" => crate::storage::flush().map(|()| Value::Null),
+        "files.readText" => crate::files::read_text(args),
+        "files.dirs" => Ok(crate::files::dirs()),
         "clipboard.read" => read_clipboard(),
         other => Err(format!("unknown platform call {other}")),
     }

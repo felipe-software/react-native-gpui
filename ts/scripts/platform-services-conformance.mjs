@@ -51,6 +51,10 @@ const testWav = join(workdir, "beep.wav");
 const notAudio = join(workdir, "not-audio.mp3");
 writeFileSync(testWav, beep);
 writeFileSync(notAudio, Buffer.from("ID3\u0004\u0000\u0000\u0000\u0000\u0000\u0000fake mp3"));
+const textFile = join(workdir, "settings.json");
+writeFileSync(textFile, '{"name":"héllo ✓"}');
+const binaryFile = join(workdir, "binary.dat");
+writeFileSync(binaryFile, Buffer.from([0xff, 0xfe, 0xfd]));
 
 const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -111,6 +115,8 @@ function runFixture() {
                 RNGPUI_TEST_WAV: testWav,
                 RNGPUI_TEST_NOT_AUDIO: notAudio,
                 RNGPUI_TEST_PROCESS: probeName,
+                RNGPUI_TEST_TEXT_FILE: textFile,
+                RNGPUI_TEST_NOT_TEXT: binaryFile,
                 RNGPUI_FAKE_SOUND_DIR: soundDir,
                 RNGPUI_FAKE_NOTIFICATIONS: notificationsFile,
                 RNGPUI_APP_NAME: "rngpui platform conformance",

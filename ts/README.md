@@ -125,7 +125,7 @@ re-renders.
 | --- | --- | --- | --- |
 | `View` `Text` `ScrollView` `SafeAreaView` `KeyboardAvoidingView` | `TextInput` `Pressable` `TouchableOpacity` `TouchableHighlight` `TouchableWithoutFeedback` `Button` `Switch` | `FlatList` `SectionList` | `Image` `Svg` `WebView` |
 
-APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `NativeClipboard`, `fetch`, `crypto`, `ImageCache`).
+APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio`, `useColorScheme`, `AppRegistry`, `createRoot` / `render`, [`Window`](#windows), `AppState` / `useAppState` / `useWindowFocused`, plus the [platform services](#platform-services) (`localStorage`, `Notifications`, `Sound`, `Processes`, `Files`, `NativeClipboard`, `fetch`, `crypto`, `ImageCache`).
 
 - **Real text input** (`TextInput`) is backed by [gpui-component](https://github.com/longbridge/gpui-component)'s editor: selection, IME, copy/paste, word motion, multiline. Resolved `style.color` and `placeholderTextColor` paint through the native editor. `onChange.nativeEvent` includes `isComposing` and `eventCount`, so controlled inputs can preserve native marked text while React commits catch up.
 - **Text truncation** follows React Native's `numberOfLines`: one-line labels truncate with ellipsis, and multi-line labels are line-clamped.
@@ -148,6 +148,30 @@ APIs: `StyleSheet`, `Dimensions`, `useWindowDimensions`, `Platform`, `PixelRatio
   `borderColor`).
 
 ## Windows
+
+### The main window's frame
+
+`render(<App />, { width, height, x, y, maximized })` opens the main window at that content
+size, position and state. A position that is not on any display is dropped, and Wayland
+ignores positions entirely (the compositor places windows). `MainWindow` follows the frame
+afterwards, so an app can save it and pass it back on the next launch:
+
+```tsx
+import { MainWindow, render } from "react-native-gpui";
+
+const saved = JSON.parse(localStorage.getItem("window") ?? "null") ?? { width: 1280, height: 800 };
+render(<App />, saved);
+MainWindow.addFrameListener((frame) => localStorage.setItem("window", JSON.stringify(frame)));
+MainWindow.setFrame({ width: 900, height: 640, maximized: false });
+```
+
+| API | Behavior |
+| --- | --- |
+| `MainWindow.addFrameListener(fn)` | Called with `{ x, y, width, height, maximized }` whenever the window moves, resizes, maximizes or restores. Size is the content size (what `render` takes), position and size are the restored frame while maximized. On Wayland `x`/`y` are not the real position. Returns `{ remove() }`. |
+| `MainWindow.getFrame()` | The last reported frame, or `null` before the first change. |
+| `MainWindow.setFrame({ width?, height?, maximized? })` | Resizes the content area and maximizes or restores the window. |
+
+### Secondary windows
 
 `<Window>` opens a real OS window that this app's React tree renders into. The window is
 another GPUI window inside the same service, drawn from the same JavaScript runtime and
@@ -504,6 +528,8 @@ await ImageCache.prefetch(emoteUrls);             // download + decode before th
 | `Notifications.show({ title, body? }): Promise<boolean>` | Linux: `org.freedesktop.Notifications` over D-Bus (body markup is escaped when the server renders markup). macOS: `osascript display notification`. Resolves `false` when nothing could show it; rejects without a title. |
 | `Sound.play(source = "ping", { volume? }): Promise<void>` | `"ping"` is synthesized; otherwise a file path, `file://` URL, or `http(s)` URL (URL sounds are cached in memory). Sources are capped at 32 MiB and 8 sounds play at once. Decodes WAV (8/16/24/32-bit PCM, 32/64-bit float); other formats reject with the reason. Resolves when playback ends. |
 | `Processes.findRunning(names): Promise<string[]>` | The given names that match a running process, compared case-insensitively against the process name and its executable's file name (Linux `/proc/*/comm` and `cmdline`, macOS `ps`). |
+| `Files.readText(path): Promise<string \| null>` | Reads a UTF-8 text file (at most 32 MiB). The path must be absolute or start with `~/`. Resolves `null` when nothing is there; rejects when the file cannot be read or is not UTF-8. Read-only: there is no write call. |
+| `Files.knownDirectories(): Promise<{ home, data, config }>` | The user's home and the platform's data and config directories: `$XDG_DATA_HOME` (default `~/.local/share`) and `$XDG_CONFIG_HOME` (default `~/.config`) on Linux, `~/Library/Application Support` for both on macOS. Use it to find another app's files. |
 | `fetch` | `Response` has `status`, `statusText`, `ok` (2xx), `url` (after redirects), `redirected`, `headers` (`get`/`has`/`forEach`/`entries`/`keys`/`values`, iterable), `text()`, `json()`, `arrayBuffer()`, `clone()`. Bodies may be strings, `URLSearchParams`, `ArrayBuffer`, or any typed array/`DataView`; network errors reject with `TypeError`. |
 | `fetch(url, { cache })` | GET requests use the disk cache below only when asked. `"default"` and `"no-store"` go to the network and store nothing. `"reload"` goes to the network and stores a 200. `"force-cache"` returns the stored copy at any age, else fetches and stores. `"only-if-cached"` returns the stored copy or a `504` response without touching the network. `"no-cache"` revalidates a stored copy with `If-None-Match`/`If-Modified-Since` and returns it on `304`. For stale-while-revalidate, start `only-if-cached` and `reload` together and apply each as it arrives. |
 | `ImageCache.prefetch(urls): Promise<boolean>` | Downloads and decodes images into GPUI's image cache, which `<Image>` (and any native element loading through GPUI's image loader) reads, so their first paint already has them. Resolves `true` when every URL loaded. |

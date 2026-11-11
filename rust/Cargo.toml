@@ -214,6 +214,12 @@ update-mode = "0.2.2-api-compatible-backports"
 #     existing `set_wm_hints` (the `WmHintPropertyState::Add`/`Remove` variants were commented
 #     out). Wayland has no protocol for it and keeps the no-op; macOS sets the NSWindow level
 #     from rust/src/liquid_glass.rs instead.
+#
+# 15. Wayland `PlatformWindow::resize` (src/platform/linux/wayland/window.rs) sets the xdg
+#     window geometry the way the configure handler does: origin 0, inset by the client
+#     decoration shadow. Upstream passed the window's requested position as the geometry
+#     offset, which Wayland reads as an offset inside the surface, so a window opened at
+#     120,120 lost 120px on each side after `Window::resize` (rngpui's `MainWindow.setFrame`).
 [patch.crates-io]
 gpui = { path = "vendor/gpui-0.2.2-patched" }
 # Patched gpui-component 0.5.1 (vendored alongside gpui, same precedent). Divergences

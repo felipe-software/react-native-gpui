@@ -62,6 +62,7 @@ mod dock;
 mod drag_out;
 mod dump;
 mod elements;
+mod files;
 mod frame_clock;
 mod frame_trace;
 mod hit_passthrough;
@@ -731,6 +732,43 @@ fn parse_point_env(name: &str) -> Option<Point<Pixels>> {
 // …), so the launcher never has to know the screen size — gpui knows it natively.
 // Driven by RNGPUI_WINDOW_ANCHOR; the gap from the screen edge is
 // RNGPUI_WINDOW_MARGIN (default 72px). None when no anchor is set or no display.
+fn origin_on_a_display(x: f32, y: f32, cx: &App) -> Option<Point<Pixels>> {
+    let origin = point(px(x), px(y));
+    cx.displays()
+        .iter()
+        .any(|display| display.bounds().contains(&origin))
+        .then_some(origin)
+}
+
+fn main_window_chrome() -> bool {
+    #[cfg(target_os = "linux")]
+    return linux_frame::main_chrome();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+fn main_window_frame(window: &Window, chrome: bool) -> (f32, f32, f32, f32, bool) {
+    let bounds = window.window_bounds();
+    let maximized = matches!(bounds, WindowBounds::Maximized(_));
+    let restore = bounds.get_bounds();
+    #[cfg(target_os = "linux")]
+    let frame = linux_frame::chrome_size(
+        chrome && linux_display::expects_client_decorations(linux_frame::requested_decorations()),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let frame = {
+        let _ = chrome;
+        size(px(0.0), px(0.0))
+    };
+    (
+        f32::from(restore.origin.x),
+        f32::from(restore.origin.y),
+        f32::from(restore.size.width - frame.width),
+        f32::from(restore.size.height - frame.height),
+        maximized,
+    )
+}
+
 fn anchored_window_origin(win_w: f32, win_h: f32, cx: &App) -> Option<Point<Pixels>> {
     let anchor = std::env::var("RNGPUI_WINDOW_ANCHOR").ok()?;
     let display = cx.primary_display()?;
@@ -1746,10 +1784,7 @@ fn first_app_key_press_listener(el: &Arc<ReactElement>) -> Option<u64> {
 }
 
 fn first_app_listener(el: &Arc<ReactElement>, event: &str) -> Option<u64> {
-    let text_owner = matches!(
-        el.element_type.as_str(),
-        "textinput" | "textarea"
-    );
+    let text_owner = matches!(el.element_type.as_str(), "textinput" | "textarea");
     if !text_owner && el.listens(event) {
         return Some(el.global_id);
     }
@@ -2652,6 +2687,14 @@ pub(crate) enum Incoming {
     WindowSize {
         width: f32,
         height: f32,
+        origin: Option<(f32, f32)>,
+        maximized: bool,
+    },
+    /// Resize the main window's content area and/or maximize or restore it.
+    SetWindowFrame {
+        width: Option<f32>,
+        height: Option<f32>,
+        maximized: Option<bool>,
     },
     /// reanimated per-frame style overrides, coalesced to one host crossing per rAF
     /// tick. Applied to the `anim_overlay` map + `cx.notify()` WITHOUT rebuilding
@@ -3052,8 +3095,22 @@ fn parse_incoming(v: &serde_json::Value) -> Option<Incoming> {
             "windowSize" => {
                 let width = v.get("width").and_then(|x| x.as_f64())? as f32;
                 let height = v.get("height").and_then(|x| x.as_f64())? as f32;
-                Some(Incoming::WindowSize { width, height })
+                let x = v.get("x").and_then(|x| x.as_f64());
+                let y = v.get("y").and_then(|y| y.as_f64());
+                let origin = x.zip(y).map(|(x, y)| (x as f32, y as f32));
+                let maximized = v.get("maximized").and_then(|m| m.as_bool()) == Some(true);
+                Some(Incoming::WindowSize {
+                    width,
+                    height,
+                    origin,
+                    maximized,
+                })
             }
+            "windowFrame" => Some(Incoming::SetWindowFrame {
+                width: v.get("width").and_then(|x| x.as_f64()).map(|x| x as f32),
+                height: v.get("height").and_then(|x| x.as_f64()).map(|x| x as f32),
+                maximized: v.get("maximized").and_then(|m| m.as_bool()),
+            }),
             "reload" => id.map(|id| Incoming::Reload { id }),
             "rendererProvenance" => {
                 bridge::renderer_provenance(
@@ -4101,15 +4158,20 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
         // runs. Discarding it left the window permanently empty for any app whose
         // first commit is also its last.
         let mut startup_backlog: Vec<Incoming> = Vec::new();
-        let (win_w, win_h) = loop {
+        let (win_w, win_h, requested_origin, start_maximized) = loop {
             match tree_rx.recv() {
-                Ok(Incoming::WindowSize { width, height }) => break (width, height),
+                Ok(Incoming::WindowSize {
+                    width,
+                    height,
+                    origin,
+                    maximized,
+                }) => break (width, height, origin, maximized),
                 Ok(Incoming::Quit) => {
                     cx.quit();
                     return;
                 }
                 Ok(other) => startup_backlog.push(other),
-                Err(_) => break (1180.0, 760.0),
+                Err(_) => break (1180.0, 760.0, None, false),
             }
         };
         startup_mark("window size received");
@@ -4118,8 +4180,14 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
             .unwrap_or((win_w, win_h));
         // anchor to the active display (bottom-center, center, …) when requested;
         // gpui knows the real screen, so the launcher never computes coordinates.
+        let origin_overridden = std::env::var_os("RNGPUI_WINDOW_ORIGIN").is_some();
+        let restored_origin = requested_origin
+            .filter(|_| !origin_overridden)
+            .and_then(|(x, y)| origin_on_a_display(x, y, cx));
         let window_origin = if offscreen_test_window {
             window_origin
+        } else if let Some(origin) = restored_origin {
+            origin
         } else {
             anchored_window_origin(win_w, win_h, cx).unwrap_or(window_origin)
         };
@@ -4155,11 +4223,16 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
         };
         #[cfg(not(target_os = "linux"))]
         let window_size = size(px(win_w), px(win_h));
+        let initial_bounds = Bounds {
+            origin: window_origin,
+            size: window_size,
+        };
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: window_origin,
-                size: window_size,
-            })),
+            window_bounds: Some(if start_maximized && !test_mode {
+                WindowBounds::Maximized(initial_bounds)
+            } else {
+                WindowBounds::Windowed(initial_bounds)
+            }),
             // borderless/HUD mode (RNGPUI_BORDERLESS) drops the titlebar + traffic
             // lights entirely, for a floating spotlight-style window.
             titlebar: if borderless {
@@ -4256,6 +4329,14 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
                     cx.on_app_quit(|_| async { linux_window_registry::remove() })
                         .detach();
                 }
+                content.update(cx, |_this, cx| {
+                    cx.observe_window_bounds(window, |this, window, _| {
+                        let (x, y, width, height, maximized) =
+                            main_window_frame(window, this.chrome);
+                        bridge::window_frame(x, y, width, height, maximized);
+                    })
+                    .detach();
+                });
                 let content_for_activation = content.clone();
                 content_for_activation.update(cx, |_this, cx| {
                     cx.observe_window_activation(window, |this, window, cx| {
@@ -6045,6 +6126,43 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
                     Incoming::DockBadge { label } => {
                         dock::set_badge(&label);
                     }
+                    Incoming::SetWindowFrame {
+                        width,
+                        height,
+                        maximized,
+                    } => {
+                        if window_handle
+                            .update(cx, |_root, window, _cx| {
+                                let chrome = main_window_chrome();
+                                let (_, _, current_w, current_h, is_maximized) =
+                                    main_window_frame(window, chrome);
+                                if let Some(target) = maximized
+                                    && target != is_maximized
+                                {
+                                    window.zoom_window();
+                                }
+                                let resize = width.is_some() || height.is_some();
+                                if resize && maximized != Some(true) {
+                                    let content = size(
+                                        px(width.unwrap_or(current_w)),
+                                        px(height.unwrap_or(current_h)),
+                                    );
+                                    #[cfg(target_os = "linux")]
+                                    let content = content
+                                        + linux_frame::chrome_size(
+                                            chrome
+                                                && linux_display::expects_client_decorations(
+                                                    linux_frame::requested_decorations(),
+                                                ),
+                                        );
+                                    window.resize(content);
+                                }
+                            })
+                            .is_err()
+                        {
+                            window_gone!();
+                        }
+                    }
                     Incoming::AppTint { color } => {
                         // needs the real NSWindow, so it takes the window-access route
                         // rather than the pump branch below.
@@ -6430,6 +6548,9 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
                             Incoming::AppTint { .. } => {
                                 unreachable!("app tint is handled with window access")
                             }
+                            Incoming::SetWindowFrame { .. } => {
+                                unreachable!("window frame is handled with window access")
+                            }
                             Incoming::DebugTap { .. } => {
                                 unreachable!("debug tap is handled with window access")
                             }
@@ -6765,9 +6886,9 @@ pub fn run(native_elements: Vec<Box<dyn native_element::NativeElement>>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppCommandBinding, AppCommandBindingSlot, Incoming,
-        accumulate_pending_root_paint_only, app_command_key_bindings, parse_incoming,
-        parse_real_keystroke, position_for_byte_offset, should_apply_input_value,
+        AppCommandBinding, AppCommandBindingSlot, Incoming, accumulate_pending_root_paint_only,
+        app_command_key_bindings, parse_incoming, parse_real_keystroke, position_for_byte_offset,
+        should_apply_input_value,
     };
     use gpui::{KeyContext, Keymap, Keystroke};
     use serde_json::json;

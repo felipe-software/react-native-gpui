@@ -1,5 +1,6 @@
 import {
     AppRegistry,
+    Files,
     getRandomValues,
     Notifications,
     Processes,
@@ -124,12 +125,23 @@ async function checkProcesses() {
     check("Processes.findRunning of nothing", (await Processes.findRunning([])).length === 0);
 }
 
+async function checkFiles() {
+    const path = env.RNGPUI_TEST_TEXT_FILE ?? "";
+    check("Files.readText reads UTF-8 text", (await Files.readText(path)) === '{"name":"héllo ✓"}');
+    check("Files.readText of a missing file is null", (await Files.readText(`${path}.missing`)) === null);
+    await rejects("Files.readText rejects relative paths", () => Files.readText("relative/settings.json"), /absolute path/);
+    await rejects("Files.readText rejects binary files", () => Files.readText(env.RNGPUI_TEST_NOT_TEXT ?? ""), /not UTF-8/);
+    const dirs = await Files.knownDirectories();
+    check("Files.knownDirectories names home, data and config", !!dirs.home?.startsWith("/") && !!dirs.data && !!dirs.config, dirs);
+}
+
 async function main() {
     checkCrypto();
     await checkFetch();
     await checkNotifications();
     await checkSound();
     await checkProcesses();
+    await checkFiles();
     console.log(`PLATFORM_CONFORMANCE done failures=${failures}`);
     process.exit(failures === 0 ? 0 : 1);
 }

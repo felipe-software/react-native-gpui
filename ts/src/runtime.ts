@@ -125,6 +125,7 @@ export type SerializedAccessibility = {
 export type BridgeEvent =
     | { type: "ready"; width: number; height: number }
     | { type: "resize"; width: number; height: number }
+    | { type: "windowFrame"; x: number; y: number; width: number; height: number; maximized: boolean }
     | { type: "command"; id: string }
     | { type: "appearance"; colorScheme: "light" | "dark" }
     | { type: "rendererProvenance"; requestId: number; provenance: RendererProvenance }

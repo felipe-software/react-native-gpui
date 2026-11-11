@@ -22,6 +22,7 @@ import { applyAppStateEvent, applyWindowFocus } from "./app-state";
 // coalesced event batches (resize/layout/scroll floods) dispatch inside one React update so
 // a window resize produces one re-render per batch instead of one per event.
 setEventBatcher((run) => (Reconciler as { batchedUpdates(fn: (a: unknown) => void, a?: unknown): void }).batchedUpdates(run));
+import { _setWindowFrame } from "./window-frame";
 import { AppCommands, NativeMenus, resolveImagePrefetch, resolveRendererProvenance, setCommandSink } from "./commands";
 import { Dimensions } from "./Dimensions";
 import { applyNativeColorScheme, setAppearanceUpdateSink } from "./colors";
@@ -40,6 +41,11 @@ export interface RootOptions {
     /** initial window size; defaults to the current Dimensions window */
     width?: number;
     height?: number;
+    /** initial window position, ignored when it is not on any display and on Wayland */
+    x?: number;
+    y?: number;
+    /** open the window maximized */
+    maximized?: boolean;
     /** optional native development tools for this root */
     devtools?: boolean | DevtoolsOptions;
 }
@@ -76,7 +82,8 @@ export function createRoot(options: RootOptions = {}): Root {
     // was fully known the moment this function ran. Announcing it here lets the
     // host open the window while React is still rendering, and the first tree then
     // fills a window that already exists.
-    sendHostCommand({ $cmd: "windowSize", width: container.width, height: container.height });
+    const placement = options.x !== undefined && options.y !== undefined ? { x: options.x, y: options.y } : {};
+    sendHostCommand({ $cmd: "windowSize", width: container.width, height: container.height, maximized: options.maximized === true, ...placement });
 
     let bridge: Bridge | null = null;
     let lastTree: SerializedNode | null = null;
@@ -167,6 +174,10 @@ export function createRoot(options: RootOptions = {}): Root {
             // re-emit even if a hook already re-rendered: the root's own width/height
             // must track the window for components that don't subscribe to dimensions.
             if (changed && bridge) pushTree(serializeContainer(container));
+            return;
+        }
+        if (e.type === "windowFrame") {
+            _setWindowFrame({ x: e.x, y: e.y, width: e.width, height: e.height, maximized: e.maximized });
             return;
         }
         if (e.type === "command") {

@@ -153,7 +153,7 @@ pub(crate) fn lookup(env: EnvLookup, name: &str) -> Option<String> {
     env(name).filter(|value| !value.trim().is_empty())
 }
 
-fn platform_data_dir(env: EnvLookup, convention: DataDirConvention) -> Option<PathBuf> {
+pub(crate) fn platform_data_dir(env: EnvLookup, convention: DataDirConvention) -> Option<PathBuf> {
     let home = lookup(env, "HOME").map(PathBuf::from);
     match convention {
         DataDirConvention::MacOs => {

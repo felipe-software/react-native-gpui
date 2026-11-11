@@ -63,14 +63,14 @@ The same service runs on Linux through GPUI's Vulkan (blade) renderer, under Way
 ## Platform services (localStorage, notifications, sound, processes, fetch, crypto)
 
 TS surface: `ts/src/platform-services.ts` (`LocalStorage`, `Notifications`, `Sound`,
-`Processes`, `getRandomValues`, `randomUUID`); the web globals live in
+`Processes`, `Files`, `getRandomValues`, `randomUUID`); the web globals live in
 `rust/src/jsc_preamble.js`. User docs: the "Platform services" section of `ts/README.md`.
 
 - **One async bridge.** `globalThis.__rngpui_platformRequest(op, args)` (preamble) calls the
   host fn `__rngpui_platformCall({id, op, args})`; `rust/src/platform_services.rs` runs the op
   on its own thread and answers through `__rngpui_platformDone`, which `jsc::queue_class`
   files as an async completion. Ops: `notifications.show`, `sound.play`,
-  `processes.findRunning`, `storage.flush`, `clipboard.read`. Add a service by adding an op
+  `processes.findRunning`, `storage.flush`, `clipboard.read`, `files.readText`, `files.dirs`. Add a service by adding an op
   there, not a new host fn. `clipboard.read` is the one op that hops to the main thread
   (`Incoming::ClipboardRead` through `crate::send_incoming`), because the clipboard belongs
   to the windowing system; `RNGPUI_FAKE_CLIPBOARD=<file>` reads and writes a file instead.
@@ -182,6 +182,18 @@ local server that counts hits: cache modes, 304 revalidation, images downloaded 
 launches, sha256 file layout, no leftover temp files, test mode without a dir stores nothing).
 Rust unit tests in `http_cache.rs` cover freshness, HTTP dates, corruption, eviction order and
 concurrent writers.
+
+## Main window frame: `MainWindow` (2026-11-10)
+
+`render(el, { width, height, x, y, maximized })` sends them in the startup `windowSize` command;
+the service opens at `x,y` only when that point is on a display and `RNGPUI_WINDOW_ORIGIN` is
+unset, and opens `WindowBounds::Maximized` unless in test mode. `observe_window_bounds` on the
+main window emits `{type:"windowFrame", x, y, width, height, maximized}` (restore bounds, content
+size: the Linux client frame is subtracted so the numbers round-trip into `render`), which
+`ts/src/window-frame.ts` (`MainWindow`) fans out. `MainWindow.setFrame` sends `windowFrame`
+(`Incoming::SetWindowFrame`: `Window::resize` plus `zoom_window` when maximized differs).
+Wayland has no window positions: GPUI reports the requested origin back, and `resize` needed
+vendored divergence 15 to stop shrinking the window by that origin.
 
 ## Secondary windows: `<Window>` (2026-11-08)
 
